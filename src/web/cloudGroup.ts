@@ -7,25 +7,36 @@ import { privateReplyDeliveries } from '../shared/bot/privateMessages'
 import type { SyncRecord } from '../shared/cloudSync'
 import type { AgentConfig, ChatMessage, Conversation, DesktopAuthUser } from '../shared/types'
 import { interfaceLanguage, isCloudAgent, modelFor, streamTurn } from './cloudChat'
+import type { HostTaskState } from '../shared/hostTask'
+import { runHostTurn, type HostAgents, type SocialCall } from './hostChat'
 import type { WebSync } from './webSync'
 
 /**
  * Group chats answered in the browser while no desktop is online: the shared
  * desktop scheduler (runGroupConversation, its dispatch policy and transport
- * prompts) with cloud agents answering through /v1. Members that run on a
+ * prompts) with cloud agents answering through /v1 and agents a douchat-host
+ * runs itself answering as owner tasks on their server. Members that run on a
  * computer are reported unavailable for the round.
  */
-export function canRunCloudGroup(sync: WebSync, conversation: Conversation): boolean {
-  return conversation.type === 'group' && conversation.agentIds.some((id) => isCloudAgent(sync.get<AgentConfig>('agent', id)))
+export function canRunCloudGroup(sync: WebSync, conversation: Conversation, hosts?: HostAgents): boolean {
+  return conversation.type === 'group' && conversation.agentIds.some((id) => isCloudAgent(sync.get<AgentConfig>('agent', id)) || Boolean(hosts?.host(id)))
 }
 
 type Activity = (phase: 'planning' | 'replying', agentIds: string[]) => void
+/** Hosts that run group members themselves, and the channel their tasks go through. */
+interface GroupHosts {
+  agents: HostAgents
+  call: SocialCall
+  /** A member's task on its host as it progresses, for approval cards and stopping. */
+  onState?(conversationId: string, agent: AgentConfig, state: HostTaskState): void
+}
 
 /** The human posts in the group, and its cloud agents answer. */
 export async function sendToCloudGroup(params: {
   sync: WebSync; token: string; user: DesktopAuthUser; conversation: Conversation; text: string; onActivity: Activity
   /** The human message's id, when it continues a queued request. */
   messageId?: string
+  hosts?: GroupHosts
 }): Promise<void> {
   const { sync, conversation, user, text } = params
   const message: ChatMessage = { id: params.messageId ?? crypto.randomUUID(), conversationId: conversation.id, topicId: conversation.activeTopicId, authorId: 'user', authorName: user.name, text, kind: 'message', createdAt: Date.now() }
@@ -43,8 +54,10 @@ export async function sendToCloudGroup(params: {
  */
 export async function runCloudGroupRound(params: {
   sync: WebSync; token: string; user: DesktopAuthUser; conversation: Conversation; trigger: ChatMessage; onActivity: Activity
+  hosts?: GroupHosts
 }): Promise<void> {
-  const { sync, token, user, conversation, trigger: message, onActivity } = params
+  const { sync, token, user, conversation, trigger: message, onActivity, hosts } = params
+  const onHost = (id: string) => Boolean(hosts?.agents.host(id))
   const topicId = message.topicId
   const topic = conversation.topics.find((item) => item.id === topicId)
   const language = interfaceLanguage()
@@ -71,17 +84,22 @@ export async function runCloudGroupRound(params: {
   const history = sync.all<ChatMessage>('message')
     .filter((item) => item.conversationId === conversation.id && item.topicId === topicId && item.kind === 'message' && item.text.trim() && item.createdAt >= (topic?.contextReset?.at ?? 0))
     .sort((a, b) => a.createdAt - b.createdAt).slice(-60).map(asGroupMessage)
-  const complete = async (agent: AgentConfig, content: string) =>
-    (await streamTurn(token, { model: await modelFor(agent, token), stream: true, messages: [{ role: 'system', content: agentIdentityPrompt(agent) }, { role: 'user', content }] }, () => undefined)).text
+  // A host adds the agent's signed identity itself.
+  const complete = async (agent: AgentConfig, content: string) => onHost(agent.id)
+    ? runHostTurn(hosts!.call, agent, content, state => hosts!.onState?.(conversation.id, agent, state), conversation.hostWorkspaces?.[agent.id]?.path)
+    : (await streamTurn(token, { model: await modelFor(agent, token), stream: true, messages: [{ role: 'system', content: agentIdentityPrompt(agent) }, { role: 'user', content }] }, () => undefined)).text
+  const answers = (id: string) => isCloudAgent(agents.get(id)) || onHost(id)
 
   const signal = new AbortController().signal
-  const unavailable = conversation.agentIds.filter((id) => !isCloudAgent(agents.get(id)))
+  const unavailable = conversation.agentIds.filter((id) => !answers(id))
   const result = await runGroupConversation({
     group, user: asGroupMessage(message), history, signal, configuredRouting: true, directMentionRouting: true, initiallyUnavailable: unavailable,
     onUnavailable: (memberId) => { void notice('Scheduling: {member} is not configured to run. Skipping this round.', { member: agents.get(memberId)?.name ?? memberId }) },
     decide: async (context) => {
       const lead = groupLeadMember(group)
-      const planner = [lead, ...group.members].find((member) => member && !context.unavailableMemberIds?.includes(member.id) && isCloudAgent(agents.get(member.id)))
+      // A cloud member plans fastest; with none, a host-run member plans as the group's leader would.
+      const available = [lead, ...group.members].filter((member): member is GroupMember => Boolean(member) && !context.unavailableMemberIds?.includes(member!.id))
+      const planner = available.find((member) => isCloudAgent(agents.get(member.id))) ?? available.find((member) => onHost(member.id))
       if (!planner) return { mode: 'none', memberIds: [], triggerMessageIds: [] }
       onActivity('planning', [planner.id])
       let correction = ''
@@ -98,7 +116,7 @@ export async function runCloudGroupRound(params: {
     },
     reply: async (member, turn, visible): Promise<GroupReply> => {
       const agent = agents.get(member.id)
-      if (!isCloudAgent(agent)) return { messages: [], failed: true }
+      if (!agent || !answers(agent.id)) return { messages: [], failed: true }
       onActivity('replying', [member.id])
       let reply = ''
       try { reply = await complete(agent, botReplyPrompt(groupConversationPrompt(group, member, visible, turn, []))) }

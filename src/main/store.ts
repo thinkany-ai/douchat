@@ -48,6 +48,7 @@ import type {
   UpdateConversationInput
 } from '../shared/types'
 import { normalizeAgentEmoji } from '../shared/avatar'
+import { ATTACHMENT_LIMITS } from '../shared/attachments'
 
 export const LOCAL_DATA_VERSION = 1
 const DEFAULT_TOPIC_ID = 'main'
@@ -65,7 +66,7 @@ const LEGACY_CONNECTORS_META = 'connectors:v1'
 const ACCOUNT_META_PREFIX = 'account:v1:'
 const LEGACY_DEMO_REMOVED_META = 'legacyDemoRemoved:v1'
 const ATTACHMENT_ID = /^[0-9a-f-]{36}$/i
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_IMAGE_BYTES = ATTACHMENT_LIMITS.imageBytes
 const IMAGE_EXTENSION: Record<MessageAttachment['mimeType'], string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -1850,10 +1851,11 @@ export class DouchatStore {
           this.write('DELETE FROM conversations WHERE id = ?', conversation.id)
           continue
         }
-        const hadWorkspace = Boolean(conversation.agentWorkspaces?.[agentId])
-        if (hadWorkspace) {
-          delete conversation.agentWorkspaces![agentId]
-          if (!Object.keys(conversation.agentWorkspaces!).length) delete conversation.agentWorkspaces
+        const hadWorkspace = Boolean(conversation.agentWorkspaces?.[agentId] || conversation.hostWorkspaces?.[agentId])
+        for (const field of ['agentWorkspaces', 'hostWorkspaces'] as const) {
+          if (!conversation[field]?.[agentId]) continue
+          delete conversation[field]![agentId]
+          if (!Object.keys(conversation[field]!).length) delete conversation[field]
         }
         if (!conversation.agentIds.includes(agentId)) { if (hadWorkspace) this.putConversation(conversation); continue }
         conversation.agentIds = conversation.agentIds.filter((id) => id !== agentId)
@@ -2008,11 +2010,15 @@ export class DouchatStore {
   setAgentWorkspace(conversationId: string, agentId: string, binding: AgentWorkspaceBinding | undefined): Conversation | undefined {
     const conversation = this.conversation(conversationId)
     if (!conversation) return undefined
-    const workspaces = { ...conversation.agentWorkspaces }
-    if (binding) workspaces[agentId] = { path: binding.path, executionTargetId: binding.executionTargetId, targetRevision: binding.targetRevision }
-    else delete workspaces[agentId]
-    if (Object.keys(workspaces).length) conversation.agentWorkspaces = workspaces
-    else delete conversation.agentWorkspaces
+    // A folder on a douchat-host's server syncs; one on this computer or an SSH server stays here.
+    for (const field of ['agentWorkspaces', 'hostWorkspaces'] as const) {
+      const workspaces = { ...conversation[field] }
+      if (binding && (field === 'hostWorkspaces') === binding.executionTargetId.startsWith('daemon:'))
+        workspaces[agentId] = { path: binding.path, executionTargetId: binding.executionTargetId, targetRevision: binding.targetRevision }
+      else delete workspaces[agentId]
+      if (Object.keys(workspaces).length) conversation[field] = workspaces
+      else delete conversation[field]
+    }
     this.putConversation(conversation)
     return conversation
   }
@@ -2058,9 +2064,11 @@ export class DouchatStore {
     if (input.agentIds && conversation.type === 'group') {
       const known = new Set(this.accountAgents.map((agent) => agent.id))
       conversation.agentIds = [...new Set(input.agentIds)].filter((agentId) => known.has(agentId))
-      if (conversation.agentWorkspaces) {
-        for (const agentId of Object.keys(conversation.agentWorkspaces)) if (!conversation.agentIds.includes(agentId)) delete conversation.agentWorkspaces[agentId]
-        if (!Object.keys(conversation.agentWorkspaces).length) delete conversation.agentWorkspaces
+      for (const field of ['agentWorkspaces', 'hostWorkspaces'] as const) {
+        const saved = conversation[field]
+        if (!saved) continue
+        for (const agentId of Object.keys(saved)) if (!conversation.agentIds.includes(agentId)) delete saved[agentId]
+        if (!Object.keys(saved).length) delete conversation[field]
       }
       if (!conversation.agentIds.includes(conversation.leadAgentId ?? '')) {
         conversation.leadAgentId = conversation.agentIds[0]

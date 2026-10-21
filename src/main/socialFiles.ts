@@ -4,10 +4,11 @@ import { basename } from 'node:path'
 import type { MessageFileInput } from '../shared/types'
 import type { SocialFile, SocialMessageImage } from '../shared/social'
 import type { DouchatStore } from './store'
+import { ATTACHMENT_LIMITS } from '../shared/attachments'
 
-const MAX_BYTES = 20 * 1024 * 1024
+const MAX_BYTES = ATTACHMENT_LIMITS.totalBytes
 export function decodeSocialFiles(files: SocialFile[] = [], images: SocialMessageImage[] = []): MessageFileInput[] {
-  if (!Array.isArray(files) || !Array.isArray(images) || files.length + images.length > 4) throw new Error('一次最多发送 4 个附件。')
+  if (!Array.isArray(files) || !Array.isArray(images) || files.length + images.length > ATTACHMENT_LIMITS.count) throw new Error('一次最多发送 4 个附件。')
   let total = images.reduce((sum, image) => sum + (image.base64 === undefined ? image.size : Buffer.from(image.base64, 'base64').length), 0)
   return files.map(file => {
     if (!file || typeof file.name !== 'string' || !file.name.trim() || file.name.length > 240 || typeof file.base64 !== 'string' || file.base64.length > Math.ceil(MAX_BYTES / 3) * 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(file.base64)) throw new Error('无效的文件附件。')

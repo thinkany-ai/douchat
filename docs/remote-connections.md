@@ -222,9 +222,28 @@ SSH 的测试连接依次检查免密认证与 host key、`/bin/sh` 和 `base64`
 
 ## 6. 守护进程连接
 
-### 6.1 当前实现：douchat-host 只做中继（对标 SSH）
+### 6.1 当前实现：douchat-host 中继，或由 B 自己执行
 
-> 2026-10 起采用本节方案，替代下文 6.4–6.8 描述的「B 自主领取并执行任务」模式。那部分设计和服务端代码保留（桌面端 `HOST_EXECUTION = false` 关闭），作为以后支持「A 离线时 B 仍可应答」的备选，当前版本不启用。
+> 2026-10 起，桌面和网页添加的 host 都跟随账号（`trust_mode = 'service'`），一律走 6.1.1 的主人任务：B 自己领取并运行，所有登录的设备都能用。中继要求主人设备签名，只剩旧版桌面添加的 owner 模式 host 在用；这类 host 在连接菜单里可以打开或关闭「在服务器上运行智能体」，也可以用「在所有设备上使用…」切换到 service 模式（见 6.3）。
+
+#### 6.1.1 主人任务（host 执行模式）
+
+`RemoteConnection.daemon.hostExecution` 打开后，这台 host 上的 agent 不再由 A 经中继驱动，而是由 B 上的 `host/src/executor.ts` 用桌面同一套 `runLocalAgent` 在本机运行 CLI（douchat-host ≥ 0.2.0，heartbeat 声明 `owner-tasks`）。
+
+- **谁调度**：发起方组好提示词。桌面走 `runtime.ts` 原有流程，执行器换成 `hostAwareExecutor`（`daemonClient.runOnHost`）；网页在桌面离线时走 `src/web/hostChat.ts`，群聊复用 `runGroupConversation`（`cloudGroup.ts`）。服务端不做调度。
+- **协议**（douchat-tanstack `social/ownerTasks.ts`）：`host-task-create` 写一行 `social_message`（`id = ot:<hash>`、`roomId = ownertask:<ownerId>`、`status = pending`），同一 `clientTaskId` 幂等；B 经 `tasks` / `claim` / `heartbeat` / `progress` / `approval-request` / `complete` 处理，租约、取消冻结、绑定变更与房间任务共用 `social_task_execution`；发起方用 `host-task-wait` 长轮询。单聊任务带 `target`，`complete` 时服务端把回复写进 sync 并删掉对应 `request`，标签页关闭也能收到。房间任务列表排除 `ownertask:`。
+- **信任方式**：service 模式的 host 跟随服务。绑定、`host.agents` 配置、审批、停止和吊销都由主人的登录会话授权，服务端不验设备签名，B 也不再验签。owner 模式的 host 照旧只认主人设备签名，规则见下一条。桌面把 service 模式记为 `daemon.trust = 'service'`，这类连接固定由 host 执行，不能切回中继。
+- **信任边界（owner 模式）**：可执行文件、参数、身份、权限只来自主人签名的 `host.agents` 配置，B 用 `trust.json` 验签，并用签名时间下限防止旧配置回滚；任务只提供提示词。可执行文件须为绝对路径，或在 B 用户登录 PATH 上找到的命令名。审批（`otherTools`、共享房间里非主人的调用）和取消都要主人设备签名，B 再核对 taskId、requestId、paramsHash、bindingRevision、claimHash。
+- **网页审批**：网页登录时用 WebCrypto 生成 Ed25519 设备密钥（`src/web/webDevice.ts`，IndexedDB，不可导出），与桌面相同的登录证明绑定为 `desktop_device`。桌面在「设置 → 连接 → Host → 受信任的设备」核对指纹后签 `host.devices` 把它加入各 host 的信任列表，之后网页即可签审批和停止。
+- **能力**：
+  - B 支持桌面支持的所有 adapter（codex、claude、gemini、grok、cursor、opencode、kimi、openclaw、fastclaw、hermes、omp）和自定义命令（`{prompt}` 参数，回复读标准输出）；`host.discover` 按同一份 CLI 列表扫描登录 PATH。
+  - 配置里带 `model`、`thinkingLevel`。
+  - 任务带 `sessionKey`（会话、话题、上下文重置版本）时，B 为这个会话保留原生会话（Codex thread、Claude session），续接时只发 `continuation`。上下文重置会换新的 key。没有 key 的一次性任务用自己的会话，结束后关闭进程。
+  - 回复可以带图片和文件：B 在提示词里给出 outbox 目录，结束后收集 outbox 文件和 agent 生成的图片（最多 4 个，合计 20 MB），随 `complete` 上传。桌面把它们存成附件；网页的单聊回复里，图片经 `host-task-attachment` 显示，文件列出文件名。
+  - 审批带 `taskScope`（工具名）。主人选「本任务内允许」后，同一任务内的同一工具不再询问。Codex 在 Douchat 里只为原生 Computer Use 发起审批，shell 在它的 workspace-write 沙箱里运行，服务器上同样如此。
+  - 每个会话可以给 agent 指定服务器上的文件夹：B 的 `fs.listDirs` / `fs.resolveDir` 提供选择器，执行前再按同一套规则检查（必须存在，不能是主目录、系统目录或 `.ssh`、`.douchat-*`）。选择存在会话的 `hostWorkspaces` 里，跟着同步，网页和桌面都能设置。
+- **限制**：B 执行时没有桌面的记忆、技能桥、connectors 和定时任务；网页离线调度时也没有记忆；网页群聊的后续轮次仍依赖标签页开着。
+
 
 守护进程连接和 SSH 连接只有传输方式不同。SSH 下 A 通过 `ssh` 进程连到 B；守护进程下，A 和 B 都以出站 HTTPS 连到 douchat-tanstack，由它中转字节流。提示词组装、记忆读写、技能桥、审批、回复后处理、工作区和续接全部仍在 A，走与 SSH 完全相同的代码（`remoteExec`、`SshTransport.spawn`、`openBridge`、`RemoteRun`），B 只执行 A 下发的远程脚本并转发 stdio。
 
@@ -315,23 +334,27 @@ sequenceDiagram
 
 ### 6.3 注册与安装
 
-Douchat「设置 → 连接 → douchat-host → 添加」生成安装命令：
+Douchat「设置 → 连接 → Host → 添加」（桌面和网页相同）生成安装命令：
 
 ```sh
-curl -fsSL '<base>/install.sh' | DOUCHAT_HOST_URL='<base>' DOUCHAT_ENROLL='dch1_<base64url>' sh
+curl -fsSL https://douchat.ai/h/7KQ2-M9XP-4TCE | sh
 ```
 
-- `<base>` 默认是 `<serviceUrl>/host`，即由 douchat-tanstack 的 `public/host/` 提供静态文件；桌面端可用环境变量 `DOUCHAT_HOST_DOWNLOAD_URL` 改为 CDN，必须是 HTTPS（localhost 允许 HTTP）。
-- `DOUCHAT_ENROLL` 含协议版本、`serviceUrl`、一次性 `ticket`（15 分钟，服务端只存哈希）、`hostId`、`ownerId`、主人设备公钥及指纹、`exp`。通过环境变量传入，不写日志。B 以令牌里的公钥作为信任锚，不采用服务端响应里的设备列表。
+- `7KQ2-M9XP-4TCE` 是安装码，即一次性票据本身：12 位 Crockford base32（60 位随机），15 分钟内有效，host 注册时用掉，服务端只存哈希。本地联调时地址是 `http://localhost:<port>/h/<code>`，并加 `--noproxy '*'`。
+- `GET /h/<code>`（douchat-tanstack `hostInstallScript`，按 IP 限流，`no-store`）返回一段引导脚本。脚本以环境变量导出 `DOUCHAT_HOST_URL` 和 `DOUCHAT_ENROLL`，再下载执行正式的 `<base>/install.sh`，下载内容的校验仍由它完成。安装码无效、已用或过期时，脚本只打印原因并以 1 退出。读取引导脚本不会用掉安装码。
+- `<base>` 由服务端决定：douchat.ai 用 `https://cdn.douchat.ai/host`，其他服务（本地联调）用 `<serviceUrl>/host`。`sh` 前设置的 `DOUCHAT_HOST_HOME`、`DOUCHAT_HOST_SERVICE` 等变量照常传给 install.sh。
+- 旧版桌面生成的 owner 模式票据仍是 `det_…`，安装命令沿用下面的长格式：`curl -fsSL '<base>/install.sh' | DOUCHAT_HOST_URL='<base>' DOUCHAT_ENROLL='dch1_<base64url>' sh`。
+- `DOUCHAT_ENROLL` 为 v2：`trust: 'service'`、`serviceUrl`、一次性 `ticket`（15 分钟，服务端只存哈希）、`hostId`、`ownerId`、`exp`，不含设备公钥。通过环境变量传入，不写日志。旧版桌面生成的 v1 令牌带主人设备公钥及指纹，B 以它作为信任锚（owner 模式），douchat-host 仍然接受。
+- 在已连接本账号的服务器上再次运行安装命令时，B 用现有注册调用 `adopt-ticket`：新票据并入原 host（状态 `merged`），若票据是 service 模式，原 host 也切换为 service。桌面「在所有设备上使用…」就是为 owner 模式的 host 生成这样一条命令：原 host 和上面的 agent 都保留，之后改为由 B 自己执行。
 
 `install.sh`（POSIX sh）步骤：
 
 1. 拒绝 root；识别 Linux / macOS 与 x64 / arm64。
 2. 找 Node.js 20+：优先私有 runtime，其次系统 `node`，都没有则从 `DOUCHAT_NODE_MIRROR`（默认 `https://nodejs.org/dist`）下载固定版本并校验 SHA256。
 3. 下载 `manifest.json`（`version`、`sha256`）和 `douchat-host.mjs`，核对摘要并运行 `version` 自检，放入 `versions/<v>/`，原子切换 `current`，生成 `bin/douchat-host` 包装脚本，只保留当前和上一个版本。
-4. 有 `DOUCHAT_ENROLL` 时执行 `setup --force`（询问指纹）和 `service install`；没有令牌但已注册时视为升级，重启服务。
+4. 有 `DOUCHAT_ENROLL` 时执行 `setup`（v1 令牌要求核对指纹）和 `service install`；没有令牌但已注册时视为升级，重启服务。
 
-A 的向导显示安装命令和设备指纹，轮询到主机上线后让用户命名并选择是否允许共享，保存为 `kind: 'daemon'` 的连接。之后与 SSH 连接一样「扫描」B 上的 CLI 并添加 agent。关闭向导而未保存时，A 签名吊销该主机，未使用的票据和已注册的主机都不会遗留。
+A 的向导显示安装命令，轮询到主机上线后让用户命名，保存为 `kind: 'daemon'` 的连接。之后「扫描」B 上的 CLI 并添加 agent。service 模式的 host 上，桌面和网页添加 agent 的方式相同：每个 agent 建一个联系人，绑定到 host，并写进 host 的 `host.agents` 配置；host 上已有同一可执行文件时不再重复添加。这些 agent 不进桌面的 `local-agents.json`，各端都从 host 配置（`executor-list`）读取，所以列表一致。旧版桌面只登记到 `local-agents.json` 的条目，若没有联系人在用、host 上又已有同一 CLI，会在下次检测时删除。网页在桌面在线时合并两边的连接和 agent，同一 host、同一 agent 只显示一次。关闭向导而未保存时，A 签名吊销该主机，未使用的票据和已注册的主机都不会遗留。
 
 发布：`npm run build:host` 在 `host/dist/` 生成 `latest.txt` 和 `<version>/` 下的 `douchat-host.mjs`、`install.sh`、`manifest.json`，根目录另有 `install.sh` 和 `latest.txt`；`npm run publish:host:local` 另外复制到 `../douchat-tanstack/public/host/`（已加入 `.gitignore`，仅供本地联调）。生产分发见第 11 节。
 
@@ -721,7 +744,7 @@ export interface RemoteTransport {
 | `src/main/connectionStore.ts`（新） | `connections.json` 原子读写；迁移计划、阶段标记与孤立引用恢复 |
 | `src/main/remote/sshTransport.ts` | 由现有 4 个 remote* 文件重组，SSH 传输实现 |
 | `src/main/remote/daemonRelay.ts`（新） | 守护进程传输：签名 `relay.open`，把脚本、stdin、eof/kill 打包成帧发往中继，按 seq/ack 取回 out/err/exit；对 `localAgentConnection` 暴露与 ssh 子进程相同的流接口 |
-| `src/main/remote/daemonClient.ts`（新） | 注册令牌与安装命令（`installCommand`、`hostDownloadBase`）、等待上线、保存/取消注册（取消时签名吊销）、主机在线状态缓存、签名封装 |
+| `src/main/remote/daemonClient.ts`（新） | 安装命令（`src/shared/hostInstall.ts`）、等待上线、保存/取消注册（取消时签名吊销）、主机在线状态缓存、签名封装 |
 | `src/main/remote/ownerSigning.ts`（新） | 设备密钥安全存储、签名 envelope；B 端用公钥校验并以 `seen.json` 防重放 |
 | `src/main/remoteWorkspace.ts`（新） | 远端目录浏览、校验、黑名单（SSH 与 douchat-host 共用） |
 | `src/main/remoteValidate.ts` | `validateConnection`、新旧 spec 兼容 |

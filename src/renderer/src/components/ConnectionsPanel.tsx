@@ -12,8 +12,6 @@ const ADAPTER_NAMES: Record<string, string> = {
   kimi: 'Kimi', openclaw: 'OpenClaw', fastclaw: 'FastClaw', hermes: 'Hermes', omp: 'OMP'
 }
 const STEP_NAMES: Record<string, string> = { ssh: 'SSH login and host key', shell: 'Shell and base64', environment: 'Login PATH and home folder', workspace: 'Private folder on the server', forwarding: 'Socket forwarding', host: 'douchat-host online' }
-/** Part of the main process's error when the session has no device key. */
-const DEVICE_IDENTITY_ERROR = '设备身份'
 const UNINSTALL_COMMAND = '"$HOME/.douchat-host/bin/douchat-host" uninstall --purge'
 // 'peer' is the other way in to the same account: the desktop app from the
 // web, and the web app from the desktop. It explains rather than lists.
@@ -64,9 +62,12 @@ export function ConnectionsPanel({ agents = [], onAgentsChange, onShowAgents }: 
   // Opens on the servers already added, and otherwise on how to reach agents.
   // SSH and host connections live in the desktop app and are managed there.
   // The web app uses the agents on them through the desktop app, like local ones.
-  const tabs: ConnectionTab[] = web ? ['peer'] : ['peer', 'ssh', 'daemon']
+  // SSH needs the desktop's keys; a douchat-host can be added from the web too,
+  // and then runs its agents itself, so they need no desktop.
+  const tabs: ConnectionTab[] = web ? ['peer', 'daemon'] : ['peer', 'ssh', 'daemon']
   const tab = chosenTab && tabs.includes(chosenTab) ? chosenTab : items?.length && tabs.includes(tabOf(items[0])) ? tabOf(items[0]) : 'peer'
-  const [enrolling, setEnrolling] = useState(false)
+  // true adds a server; a connection makes that server available on every device.
+  const [enrolling, setEnrolling] = useState<boolean | ConnectionView>(false)
   const [scanning, setScanning] = useState<ConnectionView>()
   const [menu, setMenu] = useState<string>()
   const [report, setReport] = useState<{ id: string; result?: ConnectionTestReport; running: boolean }>()
@@ -101,7 +102,7 @@ export function ConnectionsPanel({ agents = [], onAgentsChange, onShowAgents }: 
     {tab === 'peer' && (web ? <>
       <p className="settings-note">{t('Install Douchat on your computer to use the agents on it here, such as Codex and Claude Code. Your computer runs them, so keep Douchat open on it.')}</p>
       <p className={`connection-status connection-status-${desktopOnline ? 'connected' : 'disabled'}`} role="status"><i aria-hidden="true" />{t(desktopOnline ? 'The desktop app is online. Agents on your computer are ready to use.' : 'The desktop app is offline. Open Douchat on your computer and sign in to this account.')}</p>
-      <p className="settings-note">{t('Servers are added in the desktop app, under Settings → Connections. Their agents then work here too.')}</p>
+      <p className="settings-note">{t('SSH servers are added in the desktop app. A douchat-host server can be added here under Host; it runs its agents itself, so they work even while the desktop app is offline.')}</p>
       {/* Online means it is installed; offline may just mean it is closed, so both are offered. */}
       <p className="connection-peer-actions">
         <a className={`${desktopOnline ? 'primary-button' : 'secondary-button'} connection-peer-link`} href={DESKTOP_APP_LINK}><Monitor size={15} />{t('Open desktop app')}</a>
@@ -112,7 +113,7 @@ export function ConnectionsPanel({ agents = [], onAgentsChange, onShowAgents }: 
       <p><a className="secondary-button connection-peer-link" href={WEB_APP_URL} target="_blank" rel="noreferrer"><ExternalLink size={15} />{t('Open web app')}</a></p>
     </>)}
     {tab === 'ssh' && <p className="settings-note">{t(web ? 'Add a server you reach over SSH to use the agents installed on it. The desktop app connects with the SSH config and keys on your computer.' : 'Add a server you reach over SSH to use the agents installed on it. Douchat connects with the SSH config and keys on this computer.')}</p>}
-    {tab === 'daemon' && <p className="settings-note">{t(web ? 'Register any machine by running a script on it to use the agents on it. douchat-host connects out to Douchat, so the machine needs no open port. The desktop app drives its agents, and requests wait while the desktop app is offline.' : 'douchat-host runs on your server and connects out to Douchat, so this computer needs no SSH access or open port to reach it. Agents on it work like SSH agents: Douchat on this computer drives them, and requests wait while it is offline.')}</p>}
+    {tab === 'daemon' && <p className="settings-note">{t(web ? 'Register any machine by running one command on it to use the agents installed there, such as Codex and Claude Code. douchat-host connects out to Douchat, so the machine needs no open port, and it runs the agents itself, so no desktop app is needed.' : 'Register any machine by running one command on it to use the agents installed there, such as Codex and Claude Code. douchat-host connects out to Douchat, so the machine needs no open port, and it runs the agents itself, so they also answer in the web app and on your other devices while this computer is off.')}</p>}
     {tab !== 'peer' && <div className="connection-add"><button className="secondary-button" onClick={() => tab === 'daemon' ? setEnrolling(true) : setEditing('new')}><Plus size={15} />{t('Add')}</button></div>}
     {error && <p className="settings-error" role="alert">{t(error)}</p>}
     {items && tab !== 'peer' && !items.some(item => tabOf(item) === tab) && <p className="settings-note">{t(tab === 'ssh' ? 'No connections yet. Add a server from your SSH config to run agents on it.' : 'No douchat-host servers yet. Add one and run the install command on the server.')}</p>}
@@ -121,14 +122,15 @@ export function ConnectionsPanel({ agents = [], onAgentsChange, onShowAgents }: 
       <span className="local-agent-icon installed"><Server size={20} /></span>
       <div className="local-agent-copy">
         <strong>{item.name}</strong>
-        <span className={`connection-status connection-status-${item.status.state}`} role="status"><i aria-hidden="true" />{statusText(item.status)}{item.agentIds.length ? ` · ${item.agentIds.length} ${t(item.agentIds.length === 1 ? 'agent' : 'agents')}` : ''}</span>
+        <span className={`connection-status connection-status-${item.status.state}`} role="status"><i aria-hidden="true" />{statusText(item.status)}{item.agentIds.length ? ` · ${item.agentIds.length} ${t(item.agentIds.length === 1 ? 'agent' : 'agents')}` : ''}{item.daemon?.hostExecution ? ` · ${t('Runs on the server')}` : ''}</span>
         {report?.id === item.id && <div className="connection-report">
           {report.running ? <p className="settings-note"><RefreshCw size={13} className="spin" /> {t('Testing…')}</p> : report.result?.steps.map(step => <p key={step.name} className={step.passed ? 'connection-step-ok' : 'connection-step-failed'}>{step.passed ? '✓' : '✕'} {t(STEP_NAMES[step.name] ?? step.name)}{step.message ? ` · ${t(step.message)}` : ''}</p>)}
           {!report.running && <button type="button" className="local-settings-link" onClick={() => setReport(undefined)}>{t('Close')}</button>}
         </div>}
       </div>
       <div className="local-agent-row-aside">
-        <button type="button" className="secondary-button" disabled={!item.enabled} title={t('Scan for agents on this server')} aria-label={`${t('Scan for agents on this server')} ${item.name}`} onClick={() => setScanning(item)}><ScanSearch size={15} /></button>
+        {/* A server with no agents yet says so; afterwards the scan is just an icon. */}
+        <button type="button" className="secondary-button" disabled={!item.enabled} title={t('Scan for agents on this server')} aria-label={`${t('Scan for agents on this server')} ${item.name}`} onClick={() => setScanning(item)}><ScanSearch size={15} />{!item.agentIds.length && <span>{t('Add agents')}</span>}</button>
         <div className="connection-menu">
           <button type="button" className="icon-button" aria-label={`${t('More')} ${item.name}`} aria-expanded={menu === item.id} onClick={() => setMenu(menu === item.id ? undefined : item.id)}><MoreHorizontal size={16} /></button>
           {menu === item.id && <div className="connection-menu-items" role="menu">
@@ -137,13 +139,24 @@ export function ConnectionsPanel({ agents = [], onAgentsChange, onShowAgents }: 
             <button role="menuitem" disabled={!item.enabled} onClick={() => { setMenu(undefined); void run(() => window.douchat.setConnectionEnabled(item.id, false)) }}>{t('Disconnect')}</button>
             <button role="menuitem" disabled={item.kind === 'daemon' || !item.enabled} title={item.kind === 'daemon' ? t('douchat-host servers have no terminal here. Work on the server directly.') : undefined}
               onClick={() => { setMenu(undefined); void run(() => window.douchat.openConnectionTerminal(item.id)) }}>{t('Open in terminal')}</button>
+            {/* A host that follows the service always runs its agents itself; one that trusts only this computer can be switched over. */}
+            {item.kind === 'daemon' && !web && <button role="menuitemcheckbox" aria-checked={Boolean(item.daemon?.hostExecution)} disabled={item.daemon?.trust === 'service'}
+              title={t(item.daemon?.trust === 'service' ? 'This server is available on all your devices, so it always runs its agents itself.' : 'The server runs its agents itself, so they answer in the web app while this computer is off.')}
+              onClick={() => { setMenu(undefined); void run(() => window.douchat.setConnectionHostExecution(item.id, !item.daemon?.hostExecution)) }}>
+              {item.daemon?.hostExecution && <Check size={14} />} {t('Run agents on the server')}</button>}
+            {item.kind === 'daemon' && !web && item.daemon?.trust !== 'service' && <button role="menuitem" onClick={() => { setMenu(undefined); setEnrolling(item) }}>{t('Use on all devices…')}</button>}
             {item.kind === 'daemon' && <button role="menuitem" onClick={() => { setMenu(undefined); void run(() => window.douchat.copyText(UNINSTALL_COMMAND)) }}>{t('Copy uninstall command')}</button>}
             <button role="menuitem" className="danger" onClick={() => remove(item)}>{t('Delete')}</button>
           </div>}
         </div>
       </div>
     </article>)}</section>
-    {enrolling && <DaemonEnrollDialog onClose={() => setEnrolling(false)} onSaved={next => { setItems(next); setEnrolling(false) }} />}
+    {/* A newly added server goes straight on to choosing its agents. */}
+    {enrolling && <DaemonEnrollDialog upgrade={enrolling === true ? undefined : enrolling} onClose={() => setEnrolling(false)} onSaved={(next, hostId) => {
+      setItems(next); setEnrolling(false)
+      // A switched-over server keeps its agents; only a new one goes on to choosing them.
+      if (enrolling === true || enrolling.daemon?.hostId !== hostId) setScanning(next.find(item => item.daemon?.hostId === hostId))
+    }} />}
     {editing && <ConnectionEditor connection={editing === 'new' ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={next => { setItems(next); setEditing(undefined) }} />}
     {scanning && <DiscoverDialog connection={scanning} agents={agents} onClose={() => setScanning(undefined)} onAdded={list => { onAgentsChange(list); const id = scanning.id; setScanning(undefined); void load(); onShowAgents?.(id) }} />}
   </>
@@ -160,7 +173,8 @@ function ConnectionEditor({ connection, onClose, onSaved }: { connection?: Conne
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const mounted = useRef(true)
-  useEffect(() => () => { mounted.current = false }, [])
+  // Set again on mount: StrictMode mounts, unmounts and remounts in development.
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   useEffect(() => {
     void window.douchat.listSshHosts().then(list => {
       if (!mounted.current) return
@@ -209,6 +223,17 @@ function DiscoverDialog({ connection, agents, onClose, onAdded }: { connection: 
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState('')
+  // A command the scan does not know, run with a {prompt} argument (douchat-host servers added on the web).
+  const web = window.douchat.platform === 'web'
+  const [custom, setCustom] = useState({ name: '', command: '', args: '{prompt}' })
+  const customCommand = custom.command.trim()
+  const customValid = Boolean(custom.name.trim()) && (/^[A-Za-z0-9._+-]{1,100}$/.test(customCommand) || /^\/[^\0]{1,1000}$/.test(customCommand))
+  const addCustom = async (): Promise<void> => {
+    setBusy(true); setError('')
+    try {
+      onAdded(await window.douchat.addDiscoveredAgents(connection.id, [{ adapter: 'custom', executable: customCommand, name: custom.name.trim(), args: custom.args.trim() ? custom.args.trim().split(/\s+/) : [] }]))
+    } catch (cause) { setError(messageSendError(cause)); setBusy(false) }
+  }
   // An executable already registered on this connection is shown as added, not offered again.
   const added = (item: DiscoveredRemoteAgent) => agents.some(agent => (agent.remoteAgent?.connectionId ?? agent.connectionId) === connection.id && agent.remoteAgent?.executable === item.executable)
   useEffect(() => {
@@ -227,7 +252,7 @@ function DiscoverDialog({ connection, agents, onClose, onAdded }: { connection: 
       <header><h2 id="discover-title">{t('Agents on')} {connection.name}</h2><button type="button" className="icon-button" aria-label={t('Close')} onClick={onClose}><X size={18} /></button></header>
       {!found && busy && <p className="settings-note"><RefreshCw size={13} className="spin" /> {t('Scanning the server…')}</p>}
       {found && !found.length && <p className="settings-note">{t('No supported agents were found in the login PATH on this server.')}</p>}
-      {found && found.length > 0 && <p className="settings-note">{t('They join Settings → Agents, ready to add as contacts.')}</p>}
+      {found && found.length > 0 && <p className="settings-note">{t(window.douchat.platform === 'web' ? 'Each one becomes a contact with its own chat, running on this server.' : 'They join Settings → Agents, ready to add as contacts.')}</p>}
       {/* The same row as Settings → Agents: icon, name, path and version, with a checkbox to pick it. */}
       {found && found.length > 0 && <div className="discovered-agents">{found.map(item => {
         const name = ADAPTER_NAMES[item.adapter] ?? item.adapter
@@ -240,6 +265,13 @@ function DiscoverDialog({ connection, agents, onClose, onAdded }: { connection: 
           <input type="checkbox" aria-label={name} disabled={already} checked={already || chosen.has(item.adapter)} onChange={event => setChosen(current => { const next = new Set(current); if (event.target.checked) next.add(item.adapter); else next.delete(item.adapter); return next })} />
         </label>
       })}</div>}
+      {web && found && <details className="discover-custom"><summary>{t('Add a custom command')}</summary>
+        <label>{t('Name')}<input maxLength={80} value={custom.name} placeholder="My agent" onChange={event => setCustom(value => ({ ...value, name: event.target.value }))} /></label>
+        <label>{t('Command name or absolute path on the server')}<input maxLength={1000} value={custom.command} placeholder="my-agent" spellCheck={false} onChange={event => setCustom(value => ({ ...value, command: event.target.value }))} /></label>
+        <label>{t('Arguments')}<input maxLength={2000} value={custom.args} spellCheck={false} onChange={event => setCustom(value => ({ ...value, args: event.target.value }))} /></label>
+        <p className="settings-note">{t('{prompt} is replaced with the message; without it, the message is added as the last argument. The reply is read from standard output.')}</p>
+        <button type="button" className="secondary-button" disabled={busy || !customValid} onClick={() => void addCustom()}>{t('Add custom agent')}</button>
+      </details>}
       {error && <p className="settings-error" role="alert">{t(error)}</p>}
       <footer><span /><button type="button" className="secondary-button" onClick={onClose}>{t('Cancel')}</button><button type="button" className="primary-button" disabled={busy || !chosen.size} onClick={() => void add()}>{chosen.size ? tr(chosen.size === 1 ? 'Add {count} agent' : 'Add {count} agents', { count: chosen.size }) : t('Add agents')}</button></footer>
     </div>
@@ -247,10 +279,11 @@ function DiscoverDialog({ connection, agents, onClose, onAdded }: { connection: 
 }
 
 /**
- * Adds a douchat-host: the install command carries a one-time ticket and this
- * device's public key, so only this account's devices can direct the host.
+ * Adds a douchat-host that follows this Douchat account, so every signed-in app
+ * can use it. With `upgrade`, the same command run on a server added earlier
+ * (trusting only this computer) switches that server over and keeps its agents.
  */
-function DaemonEnrollDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (items: ConnectionView[]) => void }): ReactElement {
+function DaemonEnrollDialog({ upgrade, onClose, onSaved }: { upgrade?: ConnectionView; onClose: () => void; onSaved: (items: ConnectionView[], hostId: string) => void }): ReactElement {
   const [enrollment, setEnrollment] = useState<DaemonEnrollment>()
   const [host, setHost] = useState<DaemonEnrollmentResult>()
   const [name, setName] = useState('')
@@ -275,7 +308,7 @@ function DaemonEnrollDialog({ onClose, onSaved }: { onClose: () => void; onSaved
       if (!active) return
       if (!result) { setExpired(true); return }
       setHost(result)
-      setName(current => current || [result.info.os, result.info.arch].filter(Boolean).join(' ') || 'douchat-host')
+      setName(current => current || (upgrade?.daemon?.hostId === result.hostId ? upgrade.name : '') || [result.info.os, result.info.arch].filter(Boolean).join(' ') || 'douchat-host')
     }).catch(cause => { if (active) setError(messageSendError(cause)) })
     return () => {
       active = false
@@ -290,20 +323,23 @@ function DaemonEnrollDialog({ onClose, onSaved }: { onClose: () => void; onSaved
       copyTimer.current = setTimeout(() => setCopied(''), 2500)
     }).catch(() => setCopyError('Could not copy command. Try again.'))
   }
+  // The command ran on the server being switched over (not on another one, which is added as new).
+  const switched = Boolean(upgrade && host && upgrade.daemon?.hostId === host.hostId)
   const save = async (): Promise<void> => {
     if (!enrollment) return
     setBusy(true); setError('')
-    try { const next = await window.douchat.completeDaemonEnrollment(enrollment.id, { name: name.trim() }); done.current = true; onSaved(next) }
+    try { const next = await window.douchat.completeDaemonEnrollment(enrollment.id, { name: name.trim() }); done.current = true; onSaved(next, enrollment.hostId) }
     catch (cause) { setError(messageSendError(cause)); setBusy(false) }
   }
   return <NativeDialog className="modal-backdrop" onClose={onClose} width={560}>
     <form className="local-agent-editor" role="dialog" aria-modal="true" aria-labelledby="daemon-enroll-title" onSubmit={event => { event.preventDefault(); if (host && !busy) void save() }}>
-      <header><h2 id="daemon-enroll-title">{t('Add douchat-host')}</h2><button type="button" className="icon-button" aria-label={t('Close')} onClick={onClose}><X size={18} /></button></header>
+      <header><h2 id="daemon-enroll-title">{upgrade ? tr('Use {name} on all devices', { name: upgrade.name }) : t('Add douchat-host')}</h2><button type="button" className="icon-button" aria-label={t('Close')} onClick={onClose}><X size={18} /></button></header>
       {!enrollment && !error && <p className="settings-note"><RefreshCw size={13} className="spin" /> {t('Creating install command…')}</p>}
       {enrollment && !host && <>
+        {upgrade && <p className="settings-note">{t('This server trusts only this computer, so the web app and your other devices cannot use it. Run the command below on it: douchat-host stays installed with its agents, follows your Douchat account from then on, and runs the agents itself.')}</p>}
         <p className="settings-note">{t('1. Run this on the server as the user agents should run as (not root). It installs douchat-host in ~/.douchat-host, downloads Node.js there if the server has no Node.js 20+, and keeps it running as a user service.')}</p>
         <div className="daemon-command"><code>{enrollment.installCommand}</code><button type="button" className="secondary-button" aria-label={t('Copy install command')} onClick={() => copy(enrollment.installCommand, 'install')}>{copied === 'install' ? <Check size={14} /> : <Copy size={14} />}<span aria-live="polite">{t(copied === 'install' ? 'Copied' : 'Copy')}</span></button></div>
-        <p className="settings-note">{t('2. When the installer asks, confirm that it shows this fingerprint:')} <code>{enrollment.fingerprint}</code></p>
+        {enrollment.fingerprint && <p className="settings-note">{t('2. When the installer asks, confirm that it shows this fingerprint:')} <code>{enrollment.fingerprint}</code></p>}
         <p className="settings-note">{t('The command contains a one-time ticket that expires in 15 minutes. Do not share it. Closing this window without saving cancels it.')}</p>
         {expired
           ? <p className="settings-error" role="alert">{t('The install command expired before the server connected.')} <button type="button" className="local-settings-link" onClick={() => setAttempt(value => value + 1)}>{t('Create a new one')}</button></p>
@@ -312,13 +348,12 @@ function DaemonEnrollDialog({ onClose, onSaved }: { onClose: () => void; onSaved
       </>}
       {copyError && <p className="settings-error" role="alert">{t(copyError)}</p>}
       {host && <fieldset disabled={busy}>
-        <p className="connection-step-ok" role="status">✓ {t('douchat-host is online')}{host.info.version ? ` · v${host.info.version}` : ''}{host.info.os ? ` · ${[host.info.os, host.info.arch].filter(Boolean).join('/')}` : ''}</p>
-        <label>{t('Name')}<input autoFocus maxLength={80} value={name} placeholder="dev-box" onChange={event => setName(event.target.value)} /></label>
-        <p className="settings-note">{t('Next, scan the server for agents and add them. They run on the server, driven by Douchat on this computer, just like agents on an SSH connection.')}</p>
+        <p className="connection-step-ok" role="status">✓ {t(switched ? 'douchat-host now follows your Douchat account' : 'douchat-host is online')}{host.info.version ? ` · v${host.info.version}` : ''}{host.info.os ? ` · ${[host.info.os, host.info.arch].filter(Boolean).join('/')}` : ''}</p>
+        {upgrade && !switched && <p className="settings-note">{t('The command ran on a different server, so that server was added as a new one.')}</p>}
+        {!switched && <label>{t('Name')}<input autoFocus maxLength={80} value={name} placeholder="dev-box" onChange={event => setName(event.target.value)} /></label>}
+        <p className="settings-note">{t(switched ? 'Its agents now run on the server itself, so they also answer in the web app and on your other devices.' : window.douchat.platform === 'web' ? 'Next, scan the server for agents and add them. The server runs them itself, so they work here without the desktop app.' : 'Next, scan the server for agents and add them. The server runs them itself, so they also answer in the web app and on your other devices while this computer is off.')}</p>
       </fieldset>}
       {error && <p className="settings-error" role="alert">{t(error)}</p>}
-      {/* The device key is registered to an account only at sign-in, so signing in again is the fix. */}
-      {error.includes(DEVICE_IDENTITY_ERROR) && <p className="settings-note">{t('Hosts only trust this computer once its device key is registered to this account, which happens when you sign in.')} <button type="button" className="local-settings-link" onClick={() => void window.douchat.signOut().then(() => window.douchat.startLogin())}>{t('Sign in again')}</button></p>}
       <footer><span /><button type="button" className="secondary-button" onClick={onClose}>{t('Cancel')}</button>{host && <button type="submit" className="primary-button" disabled={busy}>{t(busy ? 'Saving…' : 'Save')}</button>}</footer>
     </form>
   </NativeDialog>

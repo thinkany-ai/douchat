@@ -23,11 +23,16 @@ export interface LocalAgentImage {
   data: Uint8Array
 }
 
+export interface LocalAgentFile {
+  name: string
+  data: Uint8Array
+}
+
 export interface LocalAgentReply {
   text: string
   images: LocalAgentImage[]
   /** Deliverables fetched from a remote agent's private outbox. */
-  files?: { name: string; data: Uint8Array }[]
+  files?: LocalAgentFile[]
 }
 
 export interface LocalRunOptions {
@@ -39,6 +44,8 @@ export interface LocalRunOptions {
   workspaceDirectory?: string
   /** Validated folder on a remote agent's server, bound to that server. */
   remoteWorkspace?: import('./types').AgentWorkspaceBinding
+  /** A host-run agent's native session: conversation, topic and context version. */
+  hostSession?: string
   sessionKey?: string
   /** Internal planning/probes must not retain workspace or thread history. */
   transient?: boolean
@@ -51,13 +58,23 @@ export interface LocalRunOptions {
   /** Retry only a rejected resume, before any model turn can have executed. */
   freshSessionRetry?: boolean
 }
+/** One agent turn, the same shape wherever it runs: this computer or a douchat-host. */
+export interface AgentTurn extends LocalRunOptions {
+  prompt: string
+  signal?: AbortSignal
+  /** Images the human sent; the executor shows them to the agent. */
+  images?: LocalAgentImage[]
+}
+
 /** Device execution boundary. Implementations own their sessions and lifecycle.
  * Transport, authentication and routing remain responsibilities of the host. */
 export interface AgentExecutor {
-  run(config: AgentConfig, prompt: string, signal?: AbortSignal, images?: LocalAgentImage[], options?: LocalRunOptions): Promise<LocalAgentReply>
+  run(config: AgentConfig, turn: AgentTurn): Promise<LocalAgentReply>
   releaseIdleConnections?(conversationId: string, directAgentIds?: string[], roomId?: string): void
   /** Start a conversation's long-lived process ahead of its next turn. */
   prepare?(config: AgentConfig, options: LocalRunOptions): Promise<void>
   disposeAgent(agentId: string): void
+  /** Close one session's process, for a one-off turn that is done. */
+  releaseSession?(sessionKey: string): void
   resetConversation(conversationId: string, topicId?: string, directAgentIds?: string[], ownerId?: string): void
 }

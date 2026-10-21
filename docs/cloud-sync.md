@@ -65,6 +65,7 @@ Douchat 的账号数据以云端为准。桌面、Web、iOS 读写同一套记�
 - 独立子域名：登录 token 存在浏览器本地，和官网、博客、后台不同源，官网页面读不到。`douchat.ai/app/*` 永久跳转到子域名。
 - 登录、充值、群邀请在主站 `douchat.ai` 完成，完成后回到子域名（`src/web/site.ts`）。
 - 桌面端在线时，网页版的操作交给桌面端执行（`src/shared/desktopRpc.ts`，同一套 IPC 处理逻辑）；不在线时，网页版自己处理会话、云端 agent、建群，并直接和云端 agent 对话。
+- 打开了「在服务器上运行智能体」的 douchat-host，上面的 agent 由服务器自己执行（[远程连接 6.1.1](remote-connections.md)）。桌面离线时网页把提示词作为主人任务派给它，单聊回复由服务端写回 sync；群聊里它们和云端 agent 一样参与网页调度。
 - 构建：`npm run publish:web`，产物放进 `douchat-tanstack/public/app`，随服务一起部署。本地用 `http://app.localhost:3004` 模拟子域名。
 
 ## 发布顺序

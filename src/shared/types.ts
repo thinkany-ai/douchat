@@ -45,6 +45,9 @@ export interface LocalAgent {
   unavailable?: 'disabled' | 'missing'
   /** Present for agents bound to a douchat-host daemon: they never run on this computer. */
   daemon?: { connectionId: string; hostId: string; label: string }
+  /** Configured on a douchat-host that follows the account, with its own contact, on every device.
+   * Not in this computer's registry: it is changed or removed through that contact. */
+  hosted?: boolean
 }
 
 /** Where an agent's commands run. A saved workspace path is only meaningful on
@@ -147,7 +150,16 @@ export interface RemoteAgentBinding {
 export type RemoteConnectionKind = 'ssh' | 'daemon'
 
 /** A douchat-host enrolled for one Douchat account (remote-connections.md 6.3). */
-export interface DaemonConnectionTarget { hostId: string; serviceUrl: string; ownerId: string; info?: { os?: string; arch?: string; version?: string } }
+export interface TrustedDeviceView { id: string; fingerprint: string; createdAt: number; current: boolean; trusted: boolean }
+
+export interface DaemonConnectionTarget {
+  hostId: string; serviceUrl: string; ownerId: string; info?: { os?: string; arch?: string; version?: string }
+  /** Agents on it run on the server itself (owner tasks), so they answer while this computer is off. */
+  hostExecution?: boolean
+  /** It follows the Douchat service rather than this computer's device key, so every signed-in app can use it.
+   * Such a host cannot be relayed (that needs a device signature), so it always runs its agents itself. */
+  trust?: 'service'
+}
 
 /** A server Douchat can run agents on. Stored in main only; no keys or passwords. */
 export interface RemoteConnection {
@@ -325,6 +337,9 @@ export interface Conversation {
   workspacePath?: string
   /** Folder per member, each bound to the computer or server it was chosen on. */
   agentWorkspaces?: Record<string, AgentWorkspaceBinding>
+  /** Folders chosen for agents their douchat-host runs. They are on that server,
+   * which every device of the account uses, so unlike agentWorkspaces they sync. */
+  hostWorkspaces?: Record<string, AgentWorkspaceBinding>
   allowedFolders?: string[]
   savedToContacts?: boolean
   muted?: boolean
@@ -819,6 +834,8 @@ export interface DouchatApi extends AccountDataApi, DesktopDeviceApi {
   /** Models of a detected local agent runtime, before any contact uses it. */
   listRuntimeModels: (localAgentId: string) => Promise<import('./localModels').LocalModelList>
   detectLocalAgents: () => Promise<LocalAgent[]>
+  /** Desktop only: agents configured on hosts that follow the account (the web app lists them among its local agents). */
+  listHostAgents?: () => Promise<LocalAgent[]>
   maintainLocalAgent: (id: string) => Promise<boolean>
   openLocalAgentTerminal: (id: 'claude') => Promise<{ terminal: 'termany' | 'system' }>
   addCustomLocalAgent: (input: CustomLocalAgentInput) => Promise<LocalAgent[]>
@@ -831,10 +848,16 @@ export interface DouchatApi extends AccountDataApi, DesktopDeviceApi {
   /** `mode` applies to agents still on this connection. */
   removeConnection: (id: string, mode: 'disable-agents' | 'delete-agents') => Promise<ConnectionView[]>
   setConnectionEnabled: (id: string, enabled: boolean) => Promise<ConnectionView[]>
+  /** douchat-host only: run its agents on the server so they answer while this computer is off. */
+  setConnectionHostExecution: (id: string, enabled: boolean) => Promise<ConnectionView[]>
+  /** Devices signed in to this account, and whether this computer's douchat-hosts trust each. */
+  listTrustedDevices: () => Promise<TrustedDeviceView[]>
+  /** Lets another device (a browser) approve and stop what agents on these servers do. */
+  setDeviceTrusted: (deviceId: string, trusted: boolean) => Promise<TrustedDeviceView[]>
   testConnection: (id: string) => Promise<ConnectionTestReport>
   discoverRemoteAgents: (id: string) => Promise<DiscoveredRemoteAgent[]>
   /** Adds the chosen discovered agents as remote agents on this connection. */
-  addDiscoveredAgents: (id: string, agents: Array<{ adapter: RemoteAgentAdapter; executable: string; name: string }>) => Promise<LocalAgent[]>
+  addDiscoveredAgents: (id: string, agents: Array<{ adapter: RemoteAgentAdapter; executable: string; name: string; args?: string[] }>) => Promise<LocalAgent[]>
   openConnectionTerminal: (id: string) => Promise<void>
   /** Starts adding a daemon connection; returns the one-time install command. */
   createDaemonEnrollment: () => Promise<DaemonEnrollment>

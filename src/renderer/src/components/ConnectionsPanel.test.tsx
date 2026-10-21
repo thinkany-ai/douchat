@@ -110,6 +110,29 @@ it('copies enrollment commands through the desktop bridge and reports success an
   expect(container.querySelector('[role=alert]')).toBeNull()
 })
 
+it('switches a server that trusts only this computer over to the account, keeping its agents', async () => {
+  const daemon = { hostId: 'hst_00000000-0000-4000-8000-000000000001', serviceUrl: 'https://douchat.ai', ownerId: 'u1' }
+  const box = view({ kind: 'daemon', ssh: undefined, daemon, agentIds: ['custom:a'] })
+  api.listConnections.mockResolvedValue([box])
+  api.waitDaemonEnrollment.mockResolvedValueOnce({ hostId: daemon.hostId, info: { os: 'linux' } })
+  api.completeDaemonEnrollment = vi.fn(async () => [{ ...box, daemon: { ...daemon, hostExecution: true, trust: 'service' } }])
+  await render()
+  await act(async () => button('Host').click())
+  await act(async () => button('More Box').click())
+  await act(async () => button('Use on all devices…').click())
+  expect(container.textContent).toContain('Use {name} on all devices'.replace('{name}', 'Box'))
+  expect(container.textContent).toContain('douchat-host now follows your Douchat account')
+  // Same server: no new name to choose, and its agents are kept rather than scanned again.
+  expect(container.querySelector('input[placeholder="dev-box"]')).toBeNull()
+  await act(async () => button('Save').click())
+  expect(api.completeDaemonEnrollment).toHaveBeenCalledWith('enroll-test', { name: 'Box' })
+  expect(api.discoverRemoteAgents).not.toHaveBeenCalled()
+  // Once it follows the account it cannot go back to being driven from this computer.
+  await act(async () => button('More Box').click())
+  expect([...container.querySelectorAll<HTMLButtonElement>('[role=menuitemcheckbox]')].find(item => item.textContent?.trim() === 'Run agents on the server')?.disabled).toBe(true)
+  expect(button('Use on all devices…')).toBeUndefined()
+})
+
 it('opens on how to reach agents when there are no connections, per platform', async () => {
   api.listConnections.mockResolvedValue([])
   await render()
@@ -118,14 +141,17 @@ it('opens on how to reach agents when there are no connections, per platform', a
   expect(button('Add')).toBeUndefined()
 })
 
-it('on the web, shows only the desktop app while it is offline', async () => {
+it('on the web, offers the desktop app and douchat-host servers while the desktop is offline', async () => {
   api.listConnections.mockResolvedValue([])
   Object.assign(api, { platform: 'web', desktopAvailability: vi.fn(() => 'offline') })
   await render()
   expect(container.querySelector('[role=status]')?.textContent).toContain('The desktop app is offline')
   expect([...container.querySelectorAll<HTMLAnchorElement>('a.connection-peer-link')].map(link => link.textContent)).toEqual(['Open desktop app', 'Download desktop app'])
-  expect(container.querySelector('[role=tablist]')).toBeNull()
+  // SSH needs the desktop's keys; a douchat-host can be added here.
+  expect([...container.querySelectorAll('[role=tab]')].map(tab => tab.textContent)).toEqual(['Desktop app', 'Host'])
   expect(button('Add')).toBeUndefined()
+  await act(async () => { button('Host')!.click() })
+  expect(button('Add')).toBeDefined()
 })
 
 it('on the web, offers only to open the desktop app while it is online', async () => {
@@ -135,5 +161,5 @@ it('on the web, offers only to open the desktop app while it is online', async (
   const links = [...container.querySelectorAll<HTMLAnchorElement>('a.connection-peer-link')]
   expect(links.map(link => link.textContent)).toEqual(['Open desktop app'])
   expect(links[0].getAttribute('href')).toBe('douchat-dev://open')
-  expect(container.querySelector('[role=tablist]')).toBeNull()
+  expect([...container.querySelectorAll('[role=tab]')].map(tab => tab.textContent)).toEqual(['Desktop app', 'Host'])
 })

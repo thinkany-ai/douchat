@@ -174,8 +174,12 @@ function WorkspaceApp(): ReactElement {
   const [toast, setToast] = useState('')
   const [localAgents, setLocalAgents] = useState<LocalAgent[]>([])
   const [localAgentsLoaded, setLocalAgentsLoaded] = useState(false)
+  // Agents configured on hosts that follow the account, as every device lists them (desktop only;
+  // the web app returns them from detectLocalAgents). They are not in this computer's registry.
+  const [hostAgents, setHostAgents] = useState<LocalAgent[]>([])
+  const agents = useMemo(() => [...localAgents.filter(agent => !hostAgents.some(item => item.id === agent.id)), ...hostAgents], [localAgents, hostAgents])
   // Labels and avatars elsewhere read remote hosts synchronously during render.
-  setRemoteAgents(localAgents, localAgentsLoaded)
+  setRemoteAgents(agents, localAgentsLoaded)
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState('')
   const scanInFlight = useRef(false)
@@ -187,6 +191,8 @@ function WorkspaceApp(): ReactElement {
     let scanTimer: ReturnType<typeof setTimeout> | undefined
     setScanning(true)
     setScanError('')
+    // First: it also drops this computer's leftover copies of agents a host already has.
+    await window.douchat.listHostAgents?.().then(setHostAgents, () => { /* Keep the last known list. */ })
     try { setLocalAgents(await Promise.race([
       window.douchat.detectLocalAgents(),
       new Promise<LocalAgent[]>((_, reject) => { scanTimer = setTimeout(() => reject(new Error('检测暂未完成，请稍后点击检测重试。')), 20000) })
@@ -203,6 +209,11 @@ function WorkspaceApp(): ReactElement {
   useEffect(() => {
     void scanAgents()
   }, [signedInAccountId])
+  // Agents added on another device arrive by sync; read again which of them a host runs.
+  const agentIds = snapshot?.agents.map(agent => agent.id).join() ?? ''
+  useEffect(() => {
+    if (agentIds) void window.douchat.listHostAgents?.().then(setHostAgents, () => { /* Keep the last known list. */ })
+  }, [agentIds])
   // The web app reads the desktop app's agents through it, so the list is
   // empty until it is online: read it again whenever it comes online.
   useEffect(() => {
@@ -715,12 +726,12 @@ function WorkspaceApp(): ReactElement {
       {dialog?.kind === 'add-friend' && <AddFriendModal onClose={() => setDialog(null)} />}
       {dialog && ((dialog.kind === 'bot' && dialog.agent) || dialog.kind === 'agent-permissions' || dialog.kind === 'im-channels' || dialog.kind === 'local-model') && <AgentSettingsDialog
         key={dialog.agent!.id} agent={uiSnapshot.agents.find(agent => agent.id === dialog.agent!.id) ?? dialog.agent!}
-        localAgents={localAgents} cloudModels={snapshot.models ?? []}
+        localAgents={agents} cloudModels={snapshot.models ?? []}
         initialTab={dialog.kind === 'agent-permissions' ? 'permissions' : dialog.kind === 'im-channels' ? 'channels' : dialog.kind === 'local-model' ? 'models' : 'profile'}
         onClose={() => setDialog(null)} onUpdate={updateAgent} onDelete={deleteAgent}
         onModelSettings={() => { setDialog(null); setSettingsTab('models'); setSettingsOpen(true) }}
         onCreditsSettings={() => { setDialog(null); setSettingsTab('usage'); setSettingsOpen(true) }} />}
-      {dialog?.kind === 'bot' && !dialog.agent && <BotModal localAgents={localAgents} cloudModels={snapshot.models}
+      {dialog?.kind === 'bot' && !dialog.agent && <BotModal localAgents={agents} cloudModels={snapshot.models}
         initialLocalAgentId={dialog.localAgentId}
         onModelSettings={() => { setDialog(null); setSettingsTab('models'); setSettingsOpen(true) }}
         onCreditsSettings={() => { setDialog(null); setSettingsTab('usage'); setSettingsOpen(true) }}
@@ -790,7 +801,7 @@ function WorkspaceApp(): ReactElement {
       {settingsOpen && (
         <SettingsPanel
           user={authState.user}
-          agents={localAgents}
+          agents={agents}
           scanning={scanning}
           error={scanError}
           tab={settingsTab}

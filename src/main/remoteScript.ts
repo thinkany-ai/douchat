@@ -212,6 +212,11 @@ export function clearOutboxScript(runId: string): string {
     'find "$d/out" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +', 'exit 0'].join('\n') + '\n'
 }
 
+/** Both of the above in one remote round trip, each with its own error handling. */
+export function beginTurnScript(runId: string): string {
+  return markerScript(runId) + 'set +e\n' + clearOutboxScript(runId)
+}
+
 /** A single argv entry. `prompt` entries expand to "$p" in the remote shell. */
 export type RemoteArg = string | { prompt: true } | { parts: Array<string | { prompt: true }> }
 export const PROMPT_ARG: RemoteArg = { prompt: true }

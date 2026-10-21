@@ -238,7 +238,7 @@ export async function streamTurn(token: string, body: Record<string, unknown>, o
 }
 
 /** A topic's turns between the human and one agent, oldest first, from its last context reset. */
-function chatHistory(sync: WebSync, conversationId: string, topicId: string, agentId: string, reset?: Topic['contextReset']): ChatTurn[] {
+export function chatHistory(sync: WebSync, conversationId: string, topicId: string, agentId: string, reset?: Topic['contextReset']): ChatTurn[] {
   return sync.all<ChatMessage>('message')
     .filter((item) => item.conversationId === conversationId && item.topicId === topicId && item.kind === 'message'
       // A desktop marks messages after a reset with its id; older copies have only their time.

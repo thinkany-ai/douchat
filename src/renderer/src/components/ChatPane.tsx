@@ -27,6 +27,7 @@ import type { ProfileAnchor } from './MemberProfilePopover'
 import { summarizeRuntimeError, type RuntimeErrorSummary } from '../../../shared/bot/errors'
 import { insertMention, mentionQuery, updateSelectedMentions, type MentionQuery } from '../../../shared/bot/mentions'
 import { socialFollowUpTarget } from '../../../shared/socialFollowUp'
+import { ATTACHMENT_LIMITS, IMAGE_MIME_TYPES } from '../../../shared/attachments'
 import { remoteHost } from './RemoteMark'
 import { OverlayScrollbar } from './OverlayScrollbar'
 import { AgentAvatar, EmptyAvatar, UserAvatar, agentDisplayName, conversationDisplayName, dayLabel, formatTime, isDifferentDay } from './common'
@@ -37,10 +38,8 @@ import {
   type SpeechRecognitionLike
 } from '../speechRecognition'
 
-const MAX_PASTED_IMAGES = 4
-const MAX_PASTED_IMAGE_BYTES = 8 * 1024 * 1024
-const MAX_PASTED_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024
-const PASTED_IMAGE_TYPES = new Set<MessageAttachment['mimeType']>(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+const { count: MAX_PASTED_IMAGES, imageBytes: MAX_PASTED_IMAGE_BYTES, totalBytes: MAX_PASTED_IMAGE_TOTAL_BYTES } = ATTACHMENT_LIMITS
+const PASTED_IMAGE_TYPES = new Set<MessageAttachment['mimeType']>(IMAGE_MIME_TYPES)
 // Keep action receipts persisted for diagnostics, but do not surface them in
 // completed chat messages until the product has a quieter presentation for them.
 const SHOW_MESSAGE_ACTION_RECEIPTS = false
@@ -1561,7 +1560,7 @@ export function ChatPane({
     setAttachmentError('')
     const targetConversation = conversation?.id
     try {
-      if (pendingImages.length + files.length > 4) throw new Error('一次最多发送 4 个附件。')
+      if (pendingImages.length + files.length > ATTACHMENT_LIMITS.count) throw new Error('一次最多发送 4 个附件。')
       if (pendingImages.reduce((sum, file) => sum + file.size, 0) + files.reduce((sum, file) => sum + file.size, 0) > MAX_PASTED_IMAGE_TOTAL_BYTES) throw new Error('附件总大小不能超过 20 MB。')
       const added = await Promise.all(files.map(async file => {
         if (!file.size) throw new Error('文件不能为空。')

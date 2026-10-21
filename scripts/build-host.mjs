@@ -31,6 +31,9 @@ await build({
   outfile: join(out, 'douchat-host.mjs'),
   bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'warning'
 })
+// The host runs the desktop's agent runtime; it must not pull in Electron.
+if (/(?:from|require\()\s*["']electron["']/.test(readFileSync(join(out, 'douchat-host.mjs'), 'utf8')))
+  throw new Error('douchat-host bundle imports electron')
 for (const target of [join(out, 'install.sh'), join(dist, 'install.sh')]) {
   copyFileSync(join(root, 'host', 'install.sh'), target)
   chmodSync(target, 0o755)

@@ -5,12 +5,17 @@ import { arch, platform } from 'node:os'
 import { join } from 'node:path'
 import { callChannel, HostClient, UnauthorizedError } from './client'
 import { Relay, type OpenRequest } from './relay'
+import { Executor } from './executor'
+import { desktopAgentExecutor } from '../../src/main/desktopAgentExecutor'
+import { configureLocalWorkspaces } from '../../src/main/localWorkspaces'
+import { resolveExecutable } from '../../src/main/shellPath'
+import { executableVersion } from '../../src/main/localAgents'
 import { compareVersions, isLocalBase, parseManifest, ReleaseError, sha256Hex, type ReleaseManifest } from './release'
 import { installedService, installService, PID_FILE, removeService, restartService, rotateLog, serviceStatus, startService, stopService } from './service'
-import { ensureHome, HOST_HOME, loadState, loadTrust, purgeHome, saveState, saveTrust, SeenRequests, type HostState, type TrustState } from './state'
+import { configFloor, ensureHome, HOST_HOME, loadState, loadTrust, purgeHome, saveState, saveTrust, SeenRequests, type HostState, type TrustState } from './state'
 import { acceptOwnerCommand, deviceFingerprint, generateHostKey, nextTrust, signAsHost, VerifyError } from './verify'
 
-export const HOST_VERSION = '0.1.2'
+export const HOST_VERSION = '0.2.0'
 const ENROLLMENT_PREFIX = 'dch1_'
 const TRUST_REFRESH_MS = 5 * 60 * 1000
 const ROTATE_BEFORE_MS = 30 * 24 * 60 * 60 * 1000
@@ -23,17 +28,14 @@ const die = (message: string, code = 1): never => {
   process.exit(code)
 }
 
-interface Enrollment {
-  v: 1
+/** v1 from a desktop: trust that device's key. v2 from the web app: follow the service. */
+type Enrollment = {
   serviceUrl: string
   ticket: string
   hostId: string
   ownerId: string
-  devicePublicKey: string
-  deviceId: string
-  fingerprint: string
   exp: number
-}
+} & ({ v: 1; devicePublicKey: string; deviceId: string; fingerprint: string } | { v: 2; trust: 'service' })
 
 function parseEnrollment(raw: string | undefined): Enrollment {
   if (!raw) die('Set DOUCHAT_ENROLL to the install token shown in Douchat (Connections → Add server → douchat-host).')
@@ -41,10 +43,11 @@ function parseEnrollment(raw: string | undefined): Enrollment {
   if (!token.startsWith(ENROLLMENT_PREFIX)) die('This is not a Douchat install token.')
   let value: Enrollment
   try { value = JSON.parse(Buffer.from(token.slice(ENROLLMENT_PREFIX.length), 'base64url').toString('utf8')) } catch { return die('The install token is damaged. Copy the command from Douchat again.') }
-  if (value?.v !== 1 || typeof value.serviceUrl !== 'string' || typeof value.ticket !== 'string' || !/^hst_[0-9a-f-]{36}$/.test(value.hostId) ||
-    typeof value.ownerId !== 'string' || typeof value.deviceId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value.devicePublicKey))
+  if ((value?.v !== 1 && value?.v !== 2) || typeof value.serviceUrl !== 'string' || typeof value.ticket !== 'string' || !/^hst_[0-9a-f-]{36}$/.test(value.hostId) || typeof value.ownerId !== 'string')
     die('The install token is damaged. Copy the command from Douchat again.')
-  if (deviceFingerprint(value.devicePublicKey) !== value.fingerprint) die('The install token is damaged. Copy the command from Douchat again.')
+  if (value.v === 2 && value.trust !== 'service') die('The install token is damaged. Copy the command from Douchat again.')
+  if (value.v === 1 && (typeof value.deviceId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value.devicePublicKey) || deviceFingerprint(value.devicePublicKey) !== value.fingerprint))
+    die('The install token is damaged. Copy the command from Douchat again.')
   if (!Number.isFinite(value.exp) || value.exp < Date.now()) die('The install token expired. Create a new install command in Douchat.')
   return value
 }
@@ -76,10 +79,24 @@ async function setup(args: string[]): Promise<void> {
   const enrollment = parseEnrollment(process.env.DOUCHAT_ENROLL)
   delete process.env.DOUCHAT_ENROLL
   const existing = loadState()
-  if (existing && !args.includes('--force'))
-    die(`Already registered as ${existing.hostId}. Run "douchat-host uninstall" first, or pass --force to replace it.`)
-  console.log(`Owner device fingerprint: ${enrollment.fingerprint}`)
-  if (!args.includes('--yes') && process.env.DOUCHAT_HOST_YES !== '1') {
+  const serviceOrigin = new URL(enrollment.serviceUrl).origin
+  // One install per server: a new install command for the same account reuses
+  // this registration, so every Douchat app shares one connection.
+  if (existing && existing.ownerId === enrollment.ownerId && new URL(existing.serviceUrl).origin === serviceOrigin && !args.includes('--force')) {
+    try {
+      const adopted = await callChannel<{ hostId: string; name: string | null; trustMode: string }>(serviceOrigin, existing.hostToken, { action: 'adopt-ticket', ticket: enrollment.ticket })
+      if (adopted.trustMode === 'service' && existing.trustMode !== 'service') saveState({ ...existing, trustMode: 'service' })
+      console.log(`This server is already connected to your Douchat account${adopted.name ? ` as "${adopted.name}"` : ''}. Reusing that connection.`)
+      return
+    } catch (error) {
+      // A removed registration cannot be reused; register this server again below.
+      if (!(error instanceof UnauthorizedError)) throw error
+    }
+  } else if (existing && !args.includes('--force'))
+    die(`Already registered as ${existing.hostId} with another Douchat account or service. Run "douchat-host uninstall" first, or set DOUCHAT_HOST_FORCE=1 to replace it.`)
+  if (enrollment.v === 2) console.log('This server follows your Douchat account, so every Douchat app you sign in to can use it.')
+  else console.log(`Owner device fingerprint: ${enrollment.fingerprint}`)
+  if (enrollment.v === 1 && !args.includes('--yes') && process.env.DOUCHAT_HOST_YES !== '1') {
     const confirmed = askTerminal('Does this match the fingerprint shown in Douchat? [y/N] ')
     if (confirmed === false) die('Cancelled. Nothing was saved.')
     if (confirmed === undefined) console.log('No terminal to confirm on; check that it matches the fingerprint shown in Douchat.')
@@ -87,19 +104,23 @@ async function setup(args: string[]): Promise<void> {
   const keys = generateHostKey()
   const serviceUrl = new URL(enrollment.serviceUrl).origin
   const result = await callChannel<{
-    hostId: string; hostToken: string; tokenExpiresAt: number; owner?: { id: string; name?: string }
+    hostId: string; hostToken: string; tokenExpiresAt: number; owner?: { id: string; name?: string }; trustMode?: string
     trustedDevices?: { revision?: number; devices?: { deviceId: string; publicKey: string }[] } | null
   }>(serviceUrl, undefined, { action: 'enroll', ticket: enrollment.ticket, signKey: keys.signPublicKey, info: { os: platform(), arch: arch(), version: HOST_VERSION } })
   if (result.hostId !== enrollment.hostId || (result.owner && result.owner.id !== enrollment.ownerId) || !result.hostToken?.startsWith('dhh_'))
     die('The Douchat service answered for a different host or account. Nothing was saved.')
   // The anchor comes from the token the owner copied, never from the response.
-  const anchor = { deviceId: enrollment.deviceId, publicKey: enrollment.devicePublicKey }
-  const served = result.trustedDevices
-  const sameList = served?.devices?.length === 1 && served.devices[0].deviceId === anchor.deviceId && served.devices[0].publicKey === anchor.publicKey
-  const trust: TrustState = { revision: sameList && Number.isSafeInteger(served?.revision) ? served!.revision! : 1, devices: [anchor] }
+  let trust: TrustState = { revision: 0, devices: [] }
+  if (enrollment.v === 1) {
+    const anchor = { deviceId: enrollment.deviceId, publicKey: enrollment.devicePublicKey }
+    const served = result.trustedDevices
+    const sameList = served?.devices?.length === 1 && served.devices[0].deviceId === anchor.deviceId && served.devices[0].publicKey === anchor.publicKey
+    trust = { revision: sameList && Number.isSafeInteger(served?.revision) ? served!.revision! : 1, devices: [anchor] }
+  } else if (result.trustMode !== 'service') die('The Douchat service answered for a different kind of host. Nothing was saved.')
   const state: HostState = {
     v: 1, serviceUrl, hostId: result.hostId, ownerId: enrollment.ownerId, ownerName: result.owner?.name,
-    hostToken: result.hostToken, tokenExpiresAt: result.tokenExpiresAt, signKey: keys.signKey, signPublicKey: keys.signPublicKey, enrolledAt: Date.now()
+    hostToken: result.hostToken, tokenExpiresAt: result.tokenExpiresAt, signKey: keys.signKey, signPublicKey: keys.signPublicKey, enrolledAt: Date.now(),
+    ...(enrollment.v === 2 ? { trustMode: 'service' as const } : {})
   }
   ensureHome()
   saveTrust(trust)
@@ -143,6 +164,7 @@ async function run(): Promise<void> {
     client,
     log,
     verifyOpen(signed, streamId): OpenRequest {
+      // Shells are only ever opened by a device this server trusts, whatever the trust mode.
       const command = acceptOwnerCommand<Record<string, unknown>>(signed, { origin, ownerId: state.ownerId, hostId: state.hostId, method: 'relay.open', trust }, seen)
       const payload = command.payload
       if (payload.streamId !== streamId) throw new VerifyError('Signed for a different stream.')
@@ -153,7 +175,7 @@ async function run(): Promise<void> {
   })
 
   const maintain = async () => {
-    try {
+    if (state.trustMode !== 'service') try {
       const { trustedDevices } = await client.call<{ trustedDevices?: unknown }>({ action: 'agents' })
       const next = nextTrust(trust, trustedDevices, { origin, ownerId: state.ownerId, hostId: state.hostId })
       if (next) { trust = next; saveTrust(next); log(`trusted devices updated (revision ${next.revision}, ${next.devices.length} device(s))`) }
@@ -178,9 +200,23 @@ async function run(): Promise<void> {
   void maintain()
   const timer = setInterval(() => void maintain(), TRUST_REFRESH_MS)
 
+  // Owner tasks run here with the same runtime the desktop uses for local agents.
+  const data = join(HOST_HOME, 'data')
+  configureLocalWorkspaces(data)
+  const executor = new Executor({
+    client, log, origin, ownerId: state.ownerId, hostId: state.hostId, trust: () => trust, seen, version: HOST_VERSION,
+    serviceTrusted: state.trustMode === 'service',
+    executor: desktopAgentExecutor,
+    resolveCommand: resolveExecutable,
+    readVersion: executableVersion,
+    workRoot: join(HOST_HOME, 'work'),
+    sessionRoot: join(data, 'local-workspaces', 'sessions'),
+    configFloor
+  })
+
   log(`douchat-host ${HOST_VERSION} running as ${state.hostId} (${state.serviceUrl})`)
   try {
-    await relay.run(stop.signal)
+    await Promise.all([relay.run(stop.signal), executor.run(stop.signal)])
   } catch (error) {
     if (error instanceof UnauthorizedError) {
       unlock()
@@ -275,7 +311,7 @@ function status(): void {
     `service:  ${state.serviceUrl}`,
     `owner:    ${state.ownerName ?? state.ownerId}`,
     `token:    expires ${new Date(state.tokenExpiresAt).toISOString()}`,
-    `devices:  revision ${trust.revision}; ${trust.devices.map(device => deviceFingerprint(device.publicKey)).join(', ')}`,
+    state.trustMode === 'service' ? 'trust:    follows your Douchat account' : `devices:  revision ${trust.revision}; ${trust.devices.map(device => deviceFingerprint(device.publicKey)).join(', ')}`,
     `version:  ${HOST_VERSION} (node ${process.versions.node})`,
     `process:  ${serviceStatus()}`
   ].join('\n'))

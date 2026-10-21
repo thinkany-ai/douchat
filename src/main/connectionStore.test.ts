@@ -35,6 +35,19 @@ describe('connection store', () => {
     expect((await store.save({ id: created.id, name: 'Renamed', ssh: { host: 'box', port: 22 } })).targetRevision).toBe(2)
     expect((await store.save({ id: created.id, name: 'Renamed', ssh: { host: 'box' } })).targetRevision).toBe(2)
   })
+  it('keeps a host that follows the service running its agents itself, also when saved again', async () => {
+    const store = new ConnectionStore(join(directory, 'connections.json'))
+    const daemon = { hostId: 'hst_00000000-0000-4000-8000-000000000001', serviceUrl: 'https://douchat.ai', ownerId: 'u1' }
+    const owner = await store.saveDaemon({ name: 'Box', daemon })
+    expect(owner.daemon).toEqual(daemon)
+    await store.setHostExecution(owner.id, false)
+    // Switched over (the install command ran again on it): from now on it always runs its agents itself.
+    const switched = await store.saveDaemon({ name: 'Box', daemon: { ...daemon, trust: 'service' } })
+    expect(switched.id).toBe(owner.id)
+    expect(switched.daemon).toMatchObject({ trust: 'service', hostExecution: true })
+    await expect(store.setHostExecution(owner.id, false)).rejects.toThrow('always runs its agents itself')
+    expect((await store.saveDaemon({ name: 'Renamed', daemon })).daemon).toMatchObject({ trust: 'service', hostExecution: true })
+  })
   it('rejects malformed input and drops corrupt entries on read', async () => {
     for (const bad of [{ ssh: { host: 'a b' } }, { ssh: { host: 'box', port: 70000 } }, { ssh: { host: 'box', user: 'x;y' } }, { ssh: { host: 'box', identityFile: 'relative' } }, { ssh: { host: 'box' }, id: 'conn_x' }, { name: 'x'.repeat(81), ssh: { host: 'box' } }])
       expect(() => validateConnectionInput(bad), JSON.stringify(bad)).toThrow()

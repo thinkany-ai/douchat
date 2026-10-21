@@ -8,6 +8,7 @@ import { startIMTyping } from './imTyping'
 import { formatIMMessages, type IMFormattedMessage } from './imFormatting'
 import { openWecom, validateWecom, wecomPlatform, wecomQR, wecomReqId, WecomAuthError, WecomSupersededError, type WecomConnection, type WecomFrame, type WecomSocketFactory } from './wecom'
 import type { IMChannel, IMConnectInput, IMLogin, IMLoginStatus, IMProvider, IMQRProvider } from '../shared/imChannels'
+import { ATTACHMENT_LIMITS } from '../shared/attachments'
 
 interface RecordData {
   id: string; owner: string; agentId: string; provider: IMProvider; label: string
@@ -329,7 +330,7 @@ export class IMChannelManager {
     this.enqueue(r, worker, { id: String(m.message_id ?? m.seq ?? ''), peer: m.from_user_id, text, context: m.context_token,
       ...((m.item_list ?? []).some((i: any) => i.type === 2 || i.type === 4) ? { media: async () => {
         const items = m.item_list.filter((i: any) => i.type === 2 || i.type === 4)
-        if (items.length > 4) throw new IMMediaError('一次最多发送 4 个附件，请分批发送。')
+        if (items.length > ATTACHMENT_LIMITS.count) throw new IMMediaError('一次最多发送 4 个附件，请分批发送。')
         const files: IMMedia[] = []
         for (const item of items) {
           const file = item.type === 2 ? item.image_item : item.file_item
@@ -405,7 +406,7 @@ export class IMChannelManager {
       // An open stream spins until finished with visible text, e.g. after an image-only reply.
       settle: async () => { if (reply.stream) await finish('✅') },
       ...(files.length ? { media: async () => {
-        if (files.length > 4) throw new IMMediaError('一次最多发送 4 个附件，请分批发送。')
+        if (files.length > ATTACHMENT_LIMITS.count) throw new IMMediaError('一次最多发送 4 个附件，请分批发送。')
         const result: IMMedia[] = []
         for (const { kind, src } of files) {
           let url: URL

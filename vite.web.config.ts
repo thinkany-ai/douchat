@@ -21,6 +21,10 @@ export default defineConfig(({ command }) => ({
   // Pages live at the root on the app host; the built files sit under /app.
   base: command === 'build' ? '/app/' : '/',
   publicDir: resolve(__dirname, 'src/renderer/public'),
+  // Its own optimizer cache: the desktop renderer's dev server uses node_modules/.vite
+  // with another config, and sharing it rebuilds the deps under a running page,
+  // which then loads two copies of React ("reading 'useId'" of null).
+  cacheDir: resolve(__dirname, 'node_modules/.vite-web'),
   plugins: [react()],
   resolve: { dedupe: ['react', 'react-dom'] },
   define: command === 'build' ? {} : { 'import.meta.env.VITE_DOUCHAT_SITE': JSON.stringify(site) },

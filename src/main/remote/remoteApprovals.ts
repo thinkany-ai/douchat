@@ -9,6 +9,8 @@ export interface RemoteApprovalContent {
   claimHash: string
   requestId: string
   capability: string
+  /** What "Allow for this task" covers (a tool), when the host offers it. */
+  taskScope?: string
   operation: string
   details: string
   requester: string
@@ -46,7 +48,8 @@ function validApproval(value: unknown): RemoteApprovalContent | undefined {
   if (typeof item.hostId !== 'string' || typeof item.taskId !== 'string' || typeof item.claimHash !== 'string' || typeof item.requestId !== 'string' || typeof item.paramsHash !== 'string') return undefined
   if (!Number.isSafeInteger(item.bindingRevision) || !Number.isFinite(item.createdAt) || !Number.isFinite(item.expiresAt)) return undefined
   const text = (field: unknown, max: number) => String(field ?? '').slice(0, max)
-  return { ...item, capability: text(item.capability, 100), operation: text(item.operation, 200), details: text(item.details, 4000), requester: text(item.requester, 200) }
+  return { ...item, capability: text(item.capability, 100), operation: text(item.operation, 200), details: text(item.details, 4000), requester: text(item.requester, 200),
+    ...(typeof item.taskScope === 'string' && item.taskScope ? { taskScope: text(item.taskScope, 200) } : {}) }
 }
 
 /**
@@ -73,7 +76,7 @@ export class RemoteApprovals {
         requester: content.requester || context.agentName, roomName: context.roomName, context: context.context,
         capability: (content.capability || 'otherTools') as PermissionRequest['capability'],
         operation: content.operation, details: content.details, createdAt: content.createdAt,
-        executorLabel: context.executorLabel, expiresAt: content.expiresAt
+        executorLabel: context.executorLabel, expiresAt: content.expiresAt, ...(content.taskScope ? { taskScope: content.taskScope } : {})
       } })
     }
     const before = JSON.stringify([...this.items.keys()])
