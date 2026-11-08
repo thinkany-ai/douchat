@@ -2,6 +2,7 @@ import type { SelectedMention } from '../shared/bot/mentions'
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AppSnapshot,
+  SnapshotPatch,
   CodeArtifactInput,
   CreateAgentInput,
   CustomLocalAgentInput,
@@ -89,7 +90,7 @@ const api: DouchatApi = {
   getMessagePage: (conversationId, topicId, before) => ipcRenderer.invoke('douchat:message-page', conversationId, topicId, before),
   getAttachmentData: (attachmentId) => ipcRenderer.invoke('douchat:attachment-data', attachmentId),
   openLocalFile: (path, conversationId) => ipcRenderer.invoke('douchat:open-local-file', path, conversationId),
-  getSnapshot: () => ipcRenderer.invoke('douchat:get-snapshot'),
+  getSnapshot: async () => { lastSnapshot = await ipcRenderer.invoke('douchat:get-snapshot') as AppSnapshot; return lastSnapshot },
   authorizeTokenDance: () => ipcRenderer.invoke('douchat:authorize-tokendance'),
   cancelTokenDanceAuthorization: () => ipcRenderer.invoke('douchat:cancel-tokendance'),
   getCustomModels: () => ipcRenderer.invoke('douchat:custom-models'),
@@ -184,11 +185,27 @@ const api: DouchatApi = {
     ipcRenderer.on('douchat:connany-changed', handler)
     return () => ipcRenderer.removeListener('douchat:connany-changed', handler)
   },
+  // Pushes carry only changed fields; merge them onto the last whole snapshot
+  // this window received, seeded by getSnapshot. Callers that can merge
+  // themselves use onSnapshotPatch and avoid copying the whole snapshot.
   onSnapshot: (listener: (snapshot: AppSnapshot) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, snapshot: AppSnapshot): void => listener(snapshot)
+    const handler = (): void => { if (lastSnapshot) listener(lastSnapshot) }
+    ipcRenderer.on('douchat:snapshot', handler)
+    return () => ipcRenderer.removeListener('douchat:snapshot', handler)
+  },
+  onSnapshotPatch: (listener: (patch: SnapshotPatch) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, patch: SnapshotPatch): void => listener(patch)
     ipcRenderer.on('douchat:snapshot', handler)
     return () => ipcRenderer.removeListener('douchat:snapshot', handler)
   }
+}
+
+let lastSnapshot: AppSnapshot | undefined
+// Registered first, so every other handler sees the merged result.
+ipcRenderer.on('douchat:snapshot', (_event, patch: SnapshotPatch) => { lastSnapshot = mergeSnapshotPatch(lastSnapshot, patch) })
+function mergeSnapshotPatch(base: AppSnapshot | undefined, patch: SnapshotPatch): AppSnapshot | undefined {
+  if (patch.full) return patch.values as AppSnapshot
+  return base && { ...base, ...patch.values }
 }
 
 contextBridge.exposeInMainWorld('douchat', api)

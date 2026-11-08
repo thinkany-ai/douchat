@@ -515,6 +515,13 @@ select:focus-visible {
   overscroll-behavior: contain;
 }
 
+/* Set by ChatPane on rows well outside the viewport. `auto` keeps each
+   row's last rendered height, so the scroll position does not move. */
+.timeline-item[data-offscreen] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}
+
 .message-canvas {
   width: min(100%, 850px);
   min-height: 100%;

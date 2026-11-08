@@ -1144,6 +1144,23 @@ describe('message pagination', () => {
     expect(store.searchMessages(conversationId, '12').map(m => m.text)).toEqual(['125', '124', '123', '122', '121', '120', '112', '12'])
     expect(store.searchMessages('missing', '12')).toEqual([])
   })
+
+  it('reuses recent messages until something writes', () => {
+    const store = createStore()
+    const agent = store.createAgent({ name: 'Cache', role: 'Assistant', instructions: 'Help', color: '#fff', provider: 'local', model: 'default' })
+    const conversationId = `direct-${agent.id}`
+    const topicId = store.activeTopicId(conversationId)
+    const mine = () => store.recentMessages().filter(m => m.conversationId === conversationId)
+    const first = store.addMessage({ conversationId, topicId, authorId: 'user', authorName: 'You', text: 'one', kind: 'message' })
+    const before = mine()
+    expect(mine()[0]).toBe(before[0])
+    store.addMessage({ conversationId, topicId, authorId: 'user', authorName: 'You', text: 'two', kind: 'message' })
+    expect(mine().map(m => m.text)).toEqual(['one', 'two'])
+    store.setMessageDeliveryState(first.id, 'sending')
+    expect(mine()[0].deliveryState).toBe('sending')
+    store.deleteMessage(conversationId, first.id)
+    expect(mine().map(m => m.text)).toEqual(['two'])
+  })
 })
 
 it('isolates Connany selections by login account and backend origin', () => {

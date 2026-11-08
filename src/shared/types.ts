@@ -922,4 +922,12 @@ export interface DouchatApi extends AccountDataApi, DesktopDeviceApi {
   onConnectionsChanged: (listener: () => void) => () => void
   onConnanyChanged: (listener: () => void) => () => void
   onSnapshot: (listener: (snapshot: AppSnapshot) => void) => () => void
+  /** The desktop sends only what changed; the web app has only `onSnapshot`. */
+  onSnapshotPatch?: (listener: (patch: SnapshotPatch) => void) => () => void
+}
+
+/** Either a whole snapshot or the top-level fields that changed since the last push. */
+export interface SnapshotPatch {
+  full: boolean
+  values: Partial<AppSnapshot>
 }

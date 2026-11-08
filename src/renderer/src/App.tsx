@@ -12,6 +12,7 @@ import { ChevronLeft, X } from 'lucide-react'
 import { resolveInterfaceLanguage, t, tr, usePreferences } from './preferences'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
+import { replaceEqualDeep } from './structuralSharing'
 import type {
   AgentConfig,
   LocalAgent,
@@ -66,7 +67,12 @@ function WorkspaceApp(): ReactElement {
   const preferences = usePreferences()
   const imeComposing = useRef(false)
   const [authState, setAuthState] = useState<DesktopAuthState>({ status: 'checking' })
-  const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
+  const [snapshot, setSnapshotState] = useState<AppSnapshot | null>(null)
+  // Every snapshot is a fresh copy; keep unchanged parts' identity so memoized
+  // rows (and the whole tree, when nothing changed) can skip rendering.
+  const setSnapshot = useCallback((next: AppSnapshot | null): void => {
+    setSnapshotState((previous) => next && previous ? replaceEqualDeep(previous, next) : next)
+  }, [])
   const snapshotRef = useRef(snapshot)
   snapshotRef.current = snapshot
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
@@ -270,7 +276,13 @@ function WorkspaceApp(): ReactElement {
       return
     }
     void window.douchat.getSnapshot().then(setSnapshot)
-    return window.douchat.onSnapshot(setSnapshot)
+    if (!window.douchat.onSnapshotPatch) return window.douchat.onSnapshot(setSnapshot)
+    // Desktop pushes carry only changed fields. One that arrives before the
+    // first whole snapshot is dropped; getSnapshot brings the current state.
+    return window.douchat.onSnapshotPatch((patch) => setSnapshotState((previous) => {
+      if (patch.full) return previous ? replaceEqualDeep(previous, patch.values as AppSnapshot) : patch.values as AppSnapshot
+      return previous && replaceEqualDeep(previous, { ...previous, ...patch.values })
+    }))
   }, [authState.status])
 
   useEffect(() => {

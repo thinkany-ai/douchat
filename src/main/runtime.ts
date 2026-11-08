@@ -376,6 +376,9 @@ interface SharedCaller {
   delegate: (agentId: string, content: string) => Promise<void>
   signal?: AbortSignal
 }
+type StoredSnapshot = Pick<AppSnapshot, 'agents' | 'groupMemberHealth' | 'groupGames' | 'groupWorkflows' | 'conversations' | 'messages' |
+  'privateMessages' | 'routines' | 'runs' | 'runEvents' | 'defaultConversationId' | 'userName' | 'userAvatar' | 'connectors'> & { conversationIds: Set<string> }
+
 export class DouchatRuntime {
   readonly games: GroupGames
   private readonly groupDecisionService = new GroupDecisionService()
@@ -547,40 +550,69 @@ export class DouchatRuntime {
     })
   }
 
-  snapshot(): AppSnapshot {
+  private storedSnapshot?: { version: string; value: StoredSnapshot }
+
+  /**
+   * The parts of a snapshot read from the database and profile files. Agents
+   * at work republish the snapshot several times a second (progress timers,
+   * statuses) while nothing stored changes; rebuilding this part meant
+   * reading and parsing whole tables and every agent's files each time, on
+   * the thread that also forwards input to the window.
+   */
+  private storedSnapshotPart(): StoredSnapshot {
+    const version = this.store.dataVersion()
+    if (this.storedSnapshot?.version === version) return this.storedSnapshot.value
     const agents = this.store.accountAgents
     const conversations = this.store.accountConversations
     const conversationIds = new Set(conversations.map((conversation) => conversation.id))
     const routines = [...this.store.accountRoutines].sort((a, b) => a.nextRunAt - b.nextRunAt)
     const runs = [...this.store.accountRuns].sort((a, b) => b.createdAt - a.createdAt).slice(0, 60)
     const runIds = new Set(runs.map((run) => run.id))
-    return {
+    const value: StoredSnapshot = {
       agents: agents.map((agent) => agent.skills?.some((skill) => skill.files) ? { ...agent, skills: withoutSkillFiles(agent.skills) } : agent),
       groupMemberHealth: Object.fromEntries(conversations.filter(conversation => conversation.type === 'group').map(conversation => [conversation.id,
         Object.fromEntries(Object.entries(this.store.groupHealth(conversation.id)).filter(([id]) => conversation.agentIds.includes(id)).map(([id, health]) => [id, { status: health.status, checkedAt: health.checkedAt }]))])),
       groupGames: [...new Map(this.store.groupGames().map(game => [`${game.conversationId}:${game.topicId}`, gameView(game)])).values()],
       groupWorkflows: [...new Map(this.store.groupWorkflows().map(workflow => [`${workflow.conversationId}:${workflow.topicId}`, workflowView(workflow)])).values()],
-      permissionRequests: [...this.permissions.snapshot(), ...(this.remoteBridge?.approvals() ?? [])],
       conversations,
+      conversationIds,
       messages: this.store.recentMessages().filter((message) => conversationIds.has(message.conversationId)),
       privateMessages: this.store.privateMessages.filter((message) => conversationIds.has(message.conversationId)),
-      activity: [...this.activity.values(), ...(this.remoteBridge?.activity().filter(remote => !this.activity.has(remote.conversationId)) ?? [])]
-        .filter((activity) => conversationIds.has(activity.conversationId)),
-      computers: this.computer.snapshots().filter((computer) => agents.some((agent) => agent.id === computer.agentId)),
       routines,
       runs,
       runEvents: this.store.runEvents.filter((event) => runIds.has(event.runId)),
+      defaultConversationId: this.store.defaultConversationId,
+      userName: this.store.userName,
+      userAvatar: this.store.userAvatar,
+      connectors: this.connectors.snapshot()
+    }
+    this.storedSnapshot = { version, value }
+    return value
+  }
+
+  /** A snapshot shares its stored parts with earlier ones: never mutate it. */
+  snapshot(): AppSnapshot {
+    const { conversationIds, ...stored } = this.storedSnapshotPart()
+    const { agents } = stored
+    return {
+      ...stored,
+      permissionRequests: [...this.permissions.snapshot(), ...(this.remoteBridge?.approvals() ?? [])],
+      activity: [...this.activity.values(), ...(this.remoteBridge?.activity().filter(remote => !this.activity.has(remote.conversationId)) ?? [])]
+        .filter((activity) => conversationIds.has(activity.conversationId)),
+      computers: this.computer.snapshots().filter((computer) => agents.some((agent) => agent.id === computer.agentId)),
       agentStatuses: Object.fromEntries(
         agents.map((agent) => [agent.id, this.statuses.get(agent.id) ?? 'idle'])
       ),
-      runtime: this.runtimeStatus(),
+      // Reuse the stored agents: reading them again loads every profile file.
+      runtime: this.runtimeStatus(agents),
       endpoint: this.endpointSettings(),
-      models: this.availableCloudModels(),
-      connectors: this.connectors.snapshot(),
-      defaultConversationId: this.store.defaultConversationId,
-      userName: this.store.userName,
-      userAvatar: this.store.userAvatar
+      models: this.availableCloudModels()
     }
+  }
+
+  /** Whether any conversation is replying, without building a snapshot. */
+  get busy(): boolean {
+    return this.activity.size > 0 || Boolean(this.remoteBridge?.activity().length)
   }
 
   setInterfaceLanguage(language: string): void {
@@ -674,7 +706,7 @@ export class DouchatRuntime {
     }
   }
 
-  private runtimeStatus(): RuntimeStatus {
+  private runtimeStatus(agents: AgentConfig[] = this.store.accountAgents): RuntimeStatus {
     const config = this.gatewayConfig()
     const endpoint = config.baseUrl
     if (isGatewayConfig(config)) {
@@ -688,7 +720,7 @@ export class DouchatRuntime {
         ...(this.connectionError ? { error: this.connectionError } : {})
       }
     }
-    const live = this.store.accountAgents.some((agent) => this.hasLikelyAuth(agent.provider))
+    const live = agents.some((agent) => this.hasLikelyAuth(agent.provider))
     return {
       mode: live ? 'live' : 'offline',
       label: live ? 'Connected' : 'No model connected'

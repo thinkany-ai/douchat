@@ -24,6 +24,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { BUILT_IN_PRODUCTS, parseProducts } from '../shared/products'
 import { DiagnosticLog } from './diagnostics'
 import { hostname, release as osRelease } from 'node:os'
+import { SnapshotPublisher } from './snapshotPublisher'
 import { notifyWindows } from './windowNotifications'
 import { SocialClient } from './social'
 import { CloudSyncClient } from './cloudSync'
@@ -333,6 +334,7 @@ if (initialAppUrl) {
   else pendingAuthUrl = initialAppUrl
 }
 
+const snapshotPublisher = new SnapshotPublisher<Electron.WebContents>('douchat:snapshot')
 let localWorkBlocker: number | undefined
 let quitting = false
 function broadcast(snapshot: AppSnapshot): void {
@@ -343,7 +345,7 @@ function broadcast(snapshot: AppSnapshot): void {
     powerSaveBlocker.stop(localWorkBlocker)
     localWorkBlocker = undefined
   }
-  notifyWindows(BrowserWindow.getAllWindows(), 'douchat:snapshot', snapshot)
+  snapshotPublisher.publish(BrowserWindow.getAllWindows().flatMap((window) => window.isDestroyed() ? [] : [window.webContents]), snapshot)
   // The web app shows the same "replying…" state as these windows.
   cloudSync?.publishActivity(snapshot.activity)
   cloudSync?.publishRoomReads(store.roomReadMarks())
@@ -705,7 +707,7 @@ app.whenReady().then(async () => {
     updateDriver,
     app.getVersion(),
     app.isPackaged,
-    () => runtime.snapshot().activity.length,
+    () => runtime.busy ? 1 : 0,
     broadcastUpdate
   )
   auth = new DesktopAuth(webAppUrl, authScheme, development, app.getPath('userData'), (state, reason) => {
@@ -1076,7 +1078,12 @@ app.whenReady().then(async () => {
       return roots.flatMap(root => { try { return [resolveSavedWorkspace(root)] } catch { return [] } })
     })
   })
-  ipcMain.handle('douchat:get-snapshot', () => runtime.snapshot())
+  ipcMain.handle('douchat:get-snapshot', (event) => {
+    const snapshot = runtime.snapshot()
+    // Later pushes to this window build on exactly what it now holds.
+    snapshotPublisher.reset(event.sender, snapshot)
+    return snapshot
+  })
   const push = (): AppSnapshot => {
     const snapshot = runtime.snapshot()
     broadcast(snapshot)

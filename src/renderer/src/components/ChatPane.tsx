@@ -1128,6 +1128,19 @@ export function groupConversationMessages(messages: ChatMessage[]): ChatMessage[
   return groups
 }
 
+const NO_MESSAGES: ChatMessage[] = []
+
+/** `previous` when it holds exactly the same items as `next`. */
+function sameItems<T>(previous: T[] | undefined, next: T[]): T[] | undefined {
+  return previous && previous.length === next.length && previous.every((item, index) => item === next[index]) ? previous : undefined
+}
+
+function useStableArray<T>(items: T[]): T[] {
+  const ref = useRef(items)
+  if (ref.current !== items && !sameItems(ref.current, items)) ref.current = items
+  return ref.current
+}
+
 export function ChatPane({
   person,
   onOpenPersonProfile,
@@ -1275,10 +1288,27 @@ export function ChatPane({
   const working = Boolean(activity)
   const fullConversationName = conversation ? conversationDisplayName(conversation, agents) : ''
   const conversationName = conversation ? conversationDisplayName(conversation, agents, true) : ''
+  // Reuse each group's previous array while its messages are unchanged, so a
+  // new or updated message re-renders only its own row.
+  const previousGroups = useRef(new Map<string, ChatMessage[]>())
   const timelineGroups = useMemo(() => {
     const timelineMessages = person ? messages : visibleConversationMessages(conversation, messages)
-    return groupConversationMessages(timelineMessages.filter((message) => !deletedIds.has(message.id)))
+    const groups = groupConversationMessages(timelineMessages.filter((message) => !deletedIds.has(message.id)))
+      .map((group) => sameItems(previousGroups.current.get(group[0].id), group) ?? group)
+    previousGroups.current = new Map(groups.map((group) => [group[0].id, group]))
+    return groups
   }, [person, conversation, messages, deletedIds])
+  // The parent passes fresh arrays and callbacks on every render; give the
+  // memoized rows stable ones that still call the latest handlers.
+  const stableAgents = useStableArray(agents)
+  const latest = useRef({ onOpenPersonProfile, onOpenAgentProfile, onOpenUserProfile, onOpenCredits })
+  latest.current = { onOpenPersonProfile, onOpenAgentProfile, onOpenUserProfile, onOpenCredits }
+  const rowHandlers = useMemo(() => ({
+    onOpenPersonProfile: (anchor: ProfileAnchor) => latest.current.onOpenPersonProfile?.(anchor),
+    onOpenAgentProfile: (agentId: string, anchor: ProfileAnchor) => latest.current.onOpenAgentProfile(agentId, anchor),
+    onOpenUserProfile: (anchor: ProfileAnchor) => latest.current.onOpenUserProfile(anchor),
+    onOpenCredits: () => latest.current.onOpenCredits?.()
+  }), [])
 
   useEffect(() => {
     voiceAttemptRef.current += 1
@@ -1332,6 +1362,28 @@ export function ChatPane({
     if (canvasRef.current) observer.observe(canvasRef.current)
     return () => observer.disconnect()
   }, [conversation?.id, topic?.id])
+
+  // Rows far from the viewport skip style, layout and paint. Only those: the
+  // containment this needs would clip popovers of rows people can see.
+  const offscreenObserver = useRef<IntersectionObserver | null>(null)
+  useEffect(() => {
+    const root = scrollRef.current
+    if (!root || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const row = entry.target as HTMLElement
+        if (entry.isIntersecting) delete row.dataset.offscreen
+        else row.dataset.offscreen = ''
+      }
+    }, { root, rootMargin: '200% 0px' })
+    offscreenObserver.current = observer
+    return () => { observer.disconnect(); offscreenObserver.current = null }
+  }, [conversation?.id, topic?.id])
+  useEffect(() => {
+    const observer = offscreenObserver.current
+    // Observing a row twice is a no-op, so new rows are simply added.
+    canvasRef.current?.querySelectorAll(':scope > .timeline-item').forEach((row) => observer?.observe(row))
+  }, [timelineGroups])
 
   async function loadOlder(): Promise<void> {
     const node = scrollRef.current
@@ -1690,10 +1742,10 @@ export function ChatPane({
           {timelineGroups.map((messageGroup, index) => {
             const message = messageGroup[0]
             const previous = timelineGroups[index - 1]?.at(-1)
-            const agent = agents.find((item) => item.id === message.authorId)
+            const agent = stableAgents.find((item) => item.id === message.authorId)
             const breaks = !previous || isDifferentDay(message, previous) || message.createdAt - previous.createdAt >= 300_000
             return (
-              <div key={message.id} data-message-id={message.id} onContextMenu={(event) => {
+              <div key={message.id} className="timeline-item" data-message-id={message.id} onContextMenu={(event) => {
                 event.preventDefault()
                 const id = (event.target as HTMLElement).closest('[data-message-id]')?.getAttribute('data-message-id')
                 const target = messageGroup.find((item) => item.id === id) ?? message
@@ -1708,17 +1760,17 @@ export function ChatPane({
                 <MessageRow
                   socialAgents={conversation?.socialRoom?.agents}
                   person={message.authorId !== 'user' ? person || conversation.socialRoom?.members.find((member) => member.id === message.authorId) : undefined}
-                  onOpenPersonProfile={onOpenPersonProfile}
+                  onOpenPersonProfile={onOpenPersonProfile && rowHandlers.onOpenPersonProfile}
                   messages={messageGroup}
                   agent={agent}
-                  agents={agents}
-                  relatedMessages={allMessages}
+                  agents={stableAgents}
+                  relatedMessages={messageGroup.some((item) => item.source || item.deliveries?.length) ? allMessages : NO_MESSAGES}
                   userName={userName}
                   userAvatar={userAvatar}
                   showAuthor={conversation?.type === 'group'}
-                  onOpenAgentProfile={onOpenAgentProfile}
-                  onOpenUserProfile={onOpenUserProfile}
-                  onOpenCredits={onOpenCredits}
+                  onOpenAgentProfile={rowHandlers.onOpenAgentProfile}
+                  onOpenUserProfile={rowHandlers.onOpenUserProfile}
+                  onOpenCredits={onOpenCredits && rowHandlers.onOpenCredits}
                 />
               </div>
             )

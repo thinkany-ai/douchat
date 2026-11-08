@@ -358,6 +358,7 @@ export class DouchatStore {
   }
 
   close(): void {
+    this.profileFiles?.close()
     this.db.close()
   }
 
@@ -2199,13 +2200,43 @@ export class DouchatStore {
 
   // ───────────────────────────── messages ─────────────────────────────
 
-  recentMessages(): ChatMessage[] {
-    return this.all<ChatMessage>(`SELECT data FROM (
-      SELECT data, rowid AS sequence, ROW_NUMBER() OVER (
-        PARTITION BY conversationId, topicId ORDER BY rowid DESC
-      ) AS position FROM messages
-    ) WHERE position <= 51 ORDER BY sequence`)
+  /**
+   * Every snapshot (at least once a second while an agent works) asks for
+   * this, and it scans and parses the tail of every topic. Reuse the last
+   * result until anything on this connection writes: `total_changes()` also
+   * counts trigger and cloud-sync writes, so no write path can be missed.
+   * Callers get a fresh array but share the parsed messages; treat them as
+   * read-only.
+   */
+  /**
+   * Moves whenever anything on this connection writes, including triggers and
+   * cloud sync, and whenever an agent's profile files may have changed. What
+   * is built only from stored data can be reused while it stays the same.
+   */
+  dataVersion(): string {
+    return `${this.totalChanges()}:${this.profileFiles?.version() ?? ''}`
   }
+
+  private totalChanges(): number {
+    return (this.stmt('SELECT total_changes() AS changes').get() as { changes: number }).changes
+  }
+
+  recentMessages(): ChatMessage[] {
+    const changes = this.totalChanges()
+    if (this.recentMessageCache?.changes !== changes) {
+      this.recentMessageCache = {
+        changes,
+        messages: this.all<ChatMessage>(`SELECT data FROM (
+          SELECT data, rowid AS sequence, ROW_NUMBER() OVER (
+            PARTITION BY conversationId, topicId ORDER BY rowid DESC
+          ) AS position FROM messages
+        ) WHERE position <= 51 ORDER BY sequence`)
+      }
+    }
+    return [...this.recentMessageCache.messages]
+  }
+
+  private recentMessageCache?: { changes: number; messages: ChatMessage[] }
 
   searchMessages(conversationId: string, query: string): ChatMessage[] {
     if (!query.trim()) return []
