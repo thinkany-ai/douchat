@@ -1,6 +1,6 @@
 {
   "name": "douchat",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "private": true,
   "author": "ThinkAny, LLC <support@thinkany.ai>",
   "license": "AGPL-3.0-only",
@@ -146,6 +146,13 @@
             "x64",
             "arm64"
           ]
+        }
+      ],
+      "publish": [
+        {
+          "provider": "generic",
+          "url": "https://cdn.douchat.ai/thinkany",
+          "channel": "latest"
         }
       ]
     },
