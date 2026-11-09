@@ -82,6 +82,7 @@ export const DESKTOP_RPC = {
   resetConversationContext: 'douchat:reset-conversation-context',
   setEndpoint: 'douchat:set-endpoint',
   testEndpoint: 'douchat:test-endpoint',
+  reconnectCloud: 'douchat:reconnect-cloud',
   createRoutine: 'douchat:create-routine',
   deleteRoutine: 'douchat:delete-routine',
   setRoutineEnabled: 'douchat:set-routine-enabled',

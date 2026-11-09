@@ -515,11 +515,18 @@ select:focus-visible {
   overscroll-behavior: contain;
 }
 
-/* Set by ChatPane on rows well outside the viewport. `auto` keeps each
-   row's last rendered height, so the scroll position does not move. */
+/* The browser records a row's real height only while `contain-intrinsic-size:
+   auto` applies to it as it renders, so every row carries it (it is inert
+   without size containment). Declared only on offscreen rows, no height was
+   ever recorded: rows collapsed to the 120px placeholder and grew back while
+   scrolling up, and with scroll anchoring off the thread jumped. */
+.timeline-item {
+  contain-intrinsic-size: auto 120px;
+}
+
+/* Set by ChatPane on rows well outside the viewport. */
 .timeline-item[data-offscreen] {
   content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
 }
 
 .message-canvas {
@@ -2749,6 +2756,10 @@ html[data-platform='win32'] .add-friend-modal::backdrop {
   --canvas: #f6f7fa;
   --line: #e3e5ea;
   --rail: #e2e2e5;
+  /* Chat pane and list surfaces, sampled from the WeChat desktop client:
+     an off-white pane reads softer against the gray list than pure white. */
+  --pane: #fafafa;
+  --list-surface: #e6e6e8;
   --hairline: #e6e8ed;
   --bubble-agent: #ebedf0;
   --bubble-user: #c9dcff;
@@ -3051,7 +3062,7 @@ html:is([data-platform='win32'], [data-platform='web']) .messenger .app-rail {
    canvas plus soft shadowed bubbles washed the two together; this way the
    only thing carrying contrast is the bubble itself. */
 .messenger .workspace {
-  background: #fff;
+  background: var(--pane);
 }
 
 .messenger .workspace-header {
@@ -3060,7 +3071,7 @@ html:is([data-platform='win32'], [data-platform='web']) .messenger .app-rail {
   flex: 0 0 48px;
   padding: 0 14px 0 20px;
   border-bottom: 1px solid var(--hairline);
-  background: #fff;
+  background: var(--pane);
 }
 
 .messenger .workspace-identity {
@@ -3618,7 +3629,7 @@ html:is([data-platform='win32'], [data-platform='web']) .messenger .app-rail {
   flex: 0 0 auto;
   padding: 8px 10px 10px;
   border-top: 0;
-  background: #fff;
+  background: var(--pane);
   pointer-events: auto;
 }
 
@@ -5224,7 +5235,7 @@ html:is([data-platform='win32'], [data-platform='web']) .messenger .app-rail {
 .messenger.app-shell.with-rail:has(> .sidebar):not(.detached-chat) { grid-template-columns: 60px var(--sidebar-width, 244px) minmax(0, 1fr); }
 /* Every rail is a positioning context for its resize handle, and all three
    share one surface, so switching views never shifts the background. */
-.messenger :is(.messenger-inbox, .contacts-sidebar, .settings-sidebar) { position: relative; overflow: visible; background: #e9e9eb; }
+.messenger :is(.messenger-inbox, .contacts-sidebar, .settings-sidebar) { position: relative; overflow: visible; background: var(--list-surface); }
 .sidebar-resizer { position: absolute; top: 0; bottom: 0; right: -3px; width: 6px; z-index: 30; cursor: col-resize; touch-action: none; }
 .sidebar-resizer:hover, .sidebar-resizer:focus-visible { background: var(--accent-300); }
 .messenger :is(.messenger-inbox, .contacts-sidebar, .settings-sidebar) .sidebar-titlebar { height: 58px; flex: 0 0 58px; padding: 0 12px; gap: 8px; }
@@ -5255,7 +5266,7 @@ html:is([data-platform='win32'], [data-platform='web']) .messenger .app-rail {
 [data-theme='dark'] .messenger .conversation-item.active :is(.conversation-preview,time,.pin-mark,.mute-mark) { color: #a5b5cf; }
 [data-theme='dark'] .messenger .sidebar-add { color: var(--muted); }
 
-.messenger .workspace.empty-conversation { --empty-page: #f9f9f9; display: grid; place-items: center; background: var(--empty-page); }
+.messenger .workspace.empty-conversation { --empty-page: var(--pane); display: grid; place-items: center; background: var(--empty-page); }
 .empty-conversation-mark { width: 88px; height: 88px; object-fit: contain; filter: grayscale(1); opacity: .16; }
 [data-theme='dark'] .messenger .workspace.empty-conversation { --empty-page: #202124; }
 [data-theme='dark'] .empty-conversation-mark { opacity: .22; }
@@ -7318,7 +7329,7 @@ html.native-dialog-window,
 
 /* ─────────────────────────────── Discover ─────────────────────────────── */
 
-.messenger .discover-sidebar { position: relative; overflow: visible; background: #e9e9eb; }
+.messenger .discover-sidebar { position: relative; overflow: visible; background: var(--list-surface); }
 .messenger .discover-sidebar .sidebar-titlebar { height: 64px; flex: 0 0 64px; justify-content: flex-start; padding: 0 22px; }
 .messenger .discover-sidebar .wordmark { position: static; transform: none; color: var(--ink); font-size: calc(17px * var(--font-scale, 0.92)); font-weight: 600; letter-spacing: -0.01em; }
 .discover-list { display: flex; flex-direction: column; padding: 0 0 12px; }
@@ -7330,7 +7341,7 @@ html.native-dialog-window,
 .discover-item-icon.automation { color: #f59e42; }
 .discover-item-icon.connectors { color: var(--accent-500); }
 .discover-item-label { flex: 1; min-width: 0; font-size: calc(15px * var(--font-scale, 0.92)); }
-.messenger .discover-workspace { background: #fff; }
+.messenger .discover-workspace { background: var(--pane); }
 .discover-content { flex: 1; min-height: 0; padding: 52px clamp(34px, 5vw, 66px) 56px; }
 [data-theme='dark'] .messenger .discover-sidebar { background: var(--sidebar); }
 [data-theme='dark'] .messenger .discover-workspace { background: var(--canvas); }

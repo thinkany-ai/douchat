@@ -1365,6 +1365,20 @@ export class DouchatStore {
     const records = this.accountDefaultContacts()
     const existingIndex = records.findIndex((record) => record.accountId === normalizedAccountId)
     const existing = records[existingIndex]
+    if (!existing) {
+      // An administrator saved before this record existed (older versions, or
+      // synced from another device) is adopted, so signing in never adds a
+      // second one next to it. The oldest one keeps the history.
+      const adoptable = this.agents
+        .filter((agent) => agent.ownerId === normalizedAccountId && agent.systemRole === 'admin'
+          && agent.systemKey === definition.systemKey && this.conversation(`direct-${agent.id}`))
+        .sort((a, b) => a.createdAt - b.createdAt)[0]
+      if (adoptable) {
+        records.push({ accountId: normalizedAccountId, agentId: adoptable.id, conversationId: `direct-${adoptable.id}`, systemKey: definition.systemKey })
+        this.setMeta(ACCOUNT_DEFAULT_CONTACTS_META, JSON.stringify(records))
+        return this.ensureDefaultCloudContact(normalizedAccountId, binding)
+      }
+    }
     if (existing) {
       const agent = this.agent(existing.agentId)
       if (agent) {

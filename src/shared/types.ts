@@ -909,6 +909,7 @@ export interface DouchatApi extends AccountDataApi, DesktopDeviceApi {
   revokeSupportShare: (shareId: string) => Promise<void>
   setEndpoint: (input: EndpointInput) => Promise<AppSnapshot>
   testEndpoint: (input: EndpointInput) => Promise<EndpointTestResult>
+  reconnectCloud: () => Promise<AppSnapshot>
   createRoutine: (input: CreateRoutineInput) => Promise<AppSnapshot>
   deleteRoutine: (routineId: string) => Promise<AppSnapshot>
   setRoutineEnabled: (routineId: string, enabled: boolean) => Promise<AppSnapshot>

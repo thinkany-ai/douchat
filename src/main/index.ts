@@ -1532,6 +1532,10 @@ app.whenReady().then(async () => {
     return push()
   })
   ipcMain.handle('douchat:test-endpoint', (_event, input: EndpointInput) => runtime.testEndpoint(input))
+  ipcMain.handle('douchat:reconnect-cloud', async () => {
+    await runtime.reconnectCloud()
+    return push()
+  })
   ipcMain.handle('douchat:clear-conversation', (_event, conversationId: string) => {
     if (!store.accountConversations.some((conversation) => conversation.id === conversationId)) throw new Error('Chat not found')
     const topicId = store.activeTopicId(conversationId)

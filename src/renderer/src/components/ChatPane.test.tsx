@@ -48,7 +48,8 @@ import {
   MessageRow,
   MessageSourceCard,
   SystemMessage,
-  visibleConversationMessages
+  visibleConversationMessages,
+  hideStaleErrors
 } from './ChatPane'
 
 const deliveries = [
@@ -133,6 +134,18 @@ describe('private delivery disclosure', () => {
     expect(toggle.compareDocumentPosition(container.querySelector('.bubble-primary-content')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     await act(async () => (toggle as HTMLButtonElement).click())
     expect(container.textContent).toContain(deliveries[0].content)
+  })
+
+  it('shows only the failure from the latest turn and hides earlier ones', () => {
+    const user = (id: string): ChatMessage => ({ ...incomingReply, id, authorId: 'user', kind: 'message', text: 'hi', source: undefined })
+    const failure = (id: string): ChatMessage => ({ ...incomingReply, id, authorId: 'system', kind: 'system', source: undefined,
+      text: 'The custom model was removed or is unavailable', detail: 'Error: The custom model was removed or is unavailable.' })
+    const notice: ChatMessage = { ...failure('notice'), text: 'Task cancelled.', detail: undefined }
+    const history = [user('u1'), failure('e1'), notice, user('u2'), failure('e2')]
+    expect(hideStaleErrors(history).map(message => message.id)).toEqual(['u1', 'notice', 'u2', 'e2'])
+    expect(hideStaleErrors([...history, user('u3')]).map(message => message.id)).toEqual(['u1', 'notice', 'u2', 'u3'])
+    const clean = [user('u1'), notice]
+    expect(hideStaleErrors(clean)).toBe(clean)
   })
 
   it('keeps pending receipts and does not fold across user messages or topics', () => {
@@ -248,6 +261,29 @@ describe('private delivery disclosure', () => {
     expect(container.querySelector('.message-quote img')?.getAttribute('alt')).toBe('reference.png')
     expect(container.querySelectorAll('.user-bubble > .message-attachments img')).toHaveLength(legacy ? 0 : 1)
     if (!legacy) expect(container.querySelector('.user-bubble > .message-attachments img')?.getAttribute('alt')).toBe('new.png')
+  })
+
+  it('blocks sending and offers a retry, not an agent picker, when the signed-in cloud is unavailable', async () => {
+    const onSend = vi.fn(async () => {})
+    const reconnectCloud = vi.fn().mockResolvedValue({ runtime: { mode: 'offline', label: '' } })
+    window.douchat = { reconnectCloud } as unknown as typeof window.douchat
+    const render = (cloudUnavailable: boolean) => act(async () => root.render(<ChatPane userName="You" userAvatar="" conversation={directConversation} messages={[]} allMessages={[]} agents={agents} members={agents} offline cloudUnavailable={cloudUnavailable} onConnect={() => {}} inspectorOpen={false} onToggleInspector={() => {}} onOpenAgentProfile={() => {}} onOpenUserProfile={() => {}} onSend={onSend} onStop={() => {}} />))
+    await render(true)
+    const banner = container.querySelector('.offline-banner')!
+    expect(banner.textContent).toContain('Douchat Cloud is unavailable right now. Messages cannot be sent.')
+    const textarea = container.querySelector('textarea')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'hello')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect((container.querySelector('.send-button') as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+    expect(onSend).not.toHaveBeenCalled()
+    await act(async () => (banner.querySelector('button') as HTMLButtonElement).click())
+    expect(reconnectCloud).toHaveBeenCalledOnce()
+    expect(container.querySelector('.offline-banner')?.textContent).toContain('Still cannot reach Douchat Cloud')
+    await render(false)
+    expect(container.querySelector('.offline-banner')?.textContent).toContain('Choose a local agent')
   })
 
   it('removes pasted images with Backspace at the start and previews them on click', async () => {

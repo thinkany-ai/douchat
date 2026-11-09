@@ -308,6 +308,25 @@ describe('DouchatStore', () => {
     expect(store.agent(agent!.id)).toMatchObject({ id: 'old-admin', ...drDouLocalizations.en })
   })
 
+  it('adopts an administrator saved before the account record existed instead of adding a second', () => {
+    const store = createStore()
+    const binding = { provider: 'gateway', model: 'default' }
+    const manifest: BuiltInAgentManifest = { version: 1, agents: [{
+      id: 'system-admin-05396590649a568e3cc4dcfd', systemKey: 'dr-dou', systemRole: 'admin', capabilities: ['manage_agents'],
+      templateVersion: 2, name: 'Dr. Dou', ...legacyDrDouDefaults, color: '#14B8A6', modelRoute: 'default'
+    }] }
+    const original = store.ensureDefaultCloudContact('user-1', binding, manifest).agent!
+    // An older version kept neither the account record nor the manifest, so the
+    // next sign-in falls back to the account-derived id.
+    const meta = store as unknown as { setMeta: (key: string, value: string) => void }
+    meta.setMeta('accountDefaultContacts:v1', '[]')
+    meta.setMeta('builtInAgentManifest:v1:user-1', '')
+    const again = store.ensureDefaultCloudContact('user-1', binding)
+    expect(again.created).toBe(false)
+    expect(again.agent?.id).toBe(original.id)
+    expect(store.agents.filter((agent) => agent.systemKey === 'dr-dou')).toHaveLength(1)
+  })
+
   it('creates one Dr. Dou Cloud contact per newly signed-in account', () => {
     const store = createStore()
     const binding = { provider: 'gateway', model: 'default' }

@@ -11,6 +11,7 @@ export const runtimeTranslations: Record<string, string> = {
   "The custom model was removed or is unavailable. Reconfigure it in settings.": "自定义模型已移除或不可用，请到设置中重新配置。",
   "The cloud model is unavailable. Refresh the model list and try again.": "云端模型不可用，请刷新模型列表后重试。",
   "The custom model was removed or is unavailable. Reconfigure it in Settings → Custom models.": "自定义模型已移除或不可用，请到「设置 → 自定义模型」重新配置。",
+  "This agent follows the default model, but none is set. Set one in Settings → Custom models, or switch the agent to a cloud model.": "该智能体跟随默认模型，但当前未设置默认模型。请到「设置 → 自定义模型」设置默认模型，或将运行方式改为云端模型。",
   "This agent does not belong to the current account.": "Agent 不属于当前账号。",
   "This agent is busy. Try again after the current task finishes.": "Agent 正在处理其他任务，请稍后重新发送。",
   "Task cancelled.": "任务已取消。",

@@ -1808,7 +1808,7 @@ it('uses the new default model after resetting context while preserving the agen
   expect(store.contextMessages(conversation.id, topicId)).toEqual([])
 })
 
-it('updates only default followers, including the built-in agent, and keeps model IDs with slashes', () => {
+it('updates only default followers, including the built-in agent, and keeps model IDs with slashes', async () => {
   const { store, runtime } = createRuntime()
   store.setCurrentAccountId('default-owner')
   const records = [{ id: 'mine', name: 'Mine', kind: 'openai' as const, apiBase: 'https://custom.example/v1', apiKey: 'test-key', models: ['org/one', 'org/two'] }]
@@ -1829,7 +1829,12 @@ it('updates only default followers, including the built-in agent, and keeps mode
   expect(store.agent(follower.id)).toMatchObject({ followDefaultModel: false, model: 'org/two' })
   runtime.configureCustomModels([])
   expect(() => runtime.customAgentModel('@default', 'default')).toThrow('Set a default model')
-  expect(store.agent(admin.id)?.provider).toBe('custom:@unavailable')
+  // No default custom model: followers use the cloud default and keep following.
+  // Agents pinned to a custom model keep it and never fall back to the cloud.
+  expect(store.agent(admin.id)).toMatchObject({ followDefaultModel: true, provider: 'gateway' })
+  for (const id of [follower.id, fixed.id]) expect(store.agent(id)?.provider).toBe('custom:mine')
+  runtime.configureCustomModels(records, 'mine/org/two')
+  expect(store.agent(admin.id)).toMatchObject({ followDefaultModel: true, provider: 'custom:mine', model: 'org/two' })
 })
 
 it.each([false, true])('keeps custom model routing when cloud reconnects and never falls back after removal (built-in: %s)', async (builtIn) => {
