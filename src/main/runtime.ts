@@ -457,10 +457,14 @@ export class DouchatRuntime {
       this.models.setProvider(provider)
       this.customProviders.add(provider.id)
     }
+    // With no default custom model there is nothing private to follow, so
+    // followers use the cloud default and return to the custom default once
+    // one is set. Agents pinned to a specific custom model never fall back.
+    const followsCloud = !this.defaultCustomModel
     for (const agent of this.store.accountAgents) {
       if (!agent.followDefaultModel || agent.localAgentId) continue
-      const binding = this.defaultCustomBinding()
-      this.store.updateAgent(agent.id, binding, { binding, followDefault: false })
+      const binding = followsCloud ? this.defaultCloudAgentModel() : this.defaultCustomBinding()
+      this.store.updateAgent(agent.id, binding, { binding, followDefault: followsCloud })
     }
   }
   private defaultCustomBinding(): Pick<AgentConfig, 'provider' | 'model'> {
@@ -846,20 +850,26 @@ export class DouchatRuntime {
     return this.models.getModel(config.provider, config.model)
   }
 
+  /** Reload the cloud catalog once, however many callers ask at the same time. */
+  reconnectCloud(): Promise<void> {
+    this.cloudReconnect ??= this.connect().finally(() => {
+      this.cloudReconnect = undefined
+    })
+    return this.cloudReconnect
+  }
+
   private async canRunLive(agent: AgentConfig): Promise<boolean> {
     if (agent.localAgentId) return true
     if (agent.provider.startsWith(CUSTOM_PROVIDER_PREFIX)) {
-      if (!this.models.getModel(agent.provider, agent.model)) throw new Error("The custom model was removed or is unavailable. Reconfigure it in Settings \u2192 Custom models.")
+      if (!this.models.getModel(agent.provider, agent.model)) {
+        if (agent.followDefaultModel && !this.defaultCustomModel) throw new Error("This agent follows the default model, but none is set. Set one in Settings \u2192 Custom models, or switch the agent to a cloud model.")
+        throw new Error("The custom model was removed or is unavailable. Reconfigure it in Settings \u2192 Custom models.")
+      }
       return true
     }
     // One configured endpoint answers for every bot, whatever a bot has saved.
     if (isGatewayConfig(this.gatewayConfig())) {
-      if (!this.modelOptions.length) {
-        this.cloudReconnect ??= this.connect().finally(() => {
-          this.cloudReconnect = undefined
-        })
-        await this.cloudReconnect
-      }
+      if (!this.modelOptions.length) await this.reconnectCloud()
       return this.modelOptions.length > 0
     }
     const cached = this.liveAuth.get(agent.provider)

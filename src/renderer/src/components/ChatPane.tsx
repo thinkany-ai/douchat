@@ -1041,6 +1041,24 @@ export const MessageRow = memo(function MessageRow({
   )
 })
 
+/** Whether a system message renders as a failure card (see SystemMessage). */
+export function isErrorNotice(message: ChatMessage): boolean {
+  if (message.kind !== 'system' || message.localization || legacyGroupNotice(message)) return false
+  return Boolean(message.detail) || message.text.length > 200 || Boolean(summarizeRuntimeError(message.text).guidance)
+}
+
+/** A failure only matters for the turn it ended: once the user sends again,
+ *  earlier failure cards stay in history but leave the timeline. */
+export function hideStaleErrors(messages: ChatMessage[]): ChatMessage[] {
+  let lastUser = -1
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].authorId === 'user' && messages[index].kind === 'message') { lastUser = index; break }
+  }
+  if (lastUser < 0) return messages
+  const kept = messages.filter((message, index) => index > lastUser || !isErrorNotice(message))
+  return kept.length === messages.length ? messages : kept
+}
+
 export function visibleConversationMessages(
   conversation: Conversation | undefined,
   messages: ChatMessage[]
@@ -1156,6 +1174,7 @@ export function ChatPane({
   members,
   activity,
   offline,
+  cloudUnavailable = false,
   onConnect,
   inspectorOpen,
   onToggleInspector,
@@ -1183,6 +1202,8 @@ export function ChatPane({
   members: AgentConfig[]
   activity?: ConversationActivityState
   offline: boolean
+  /** The signed-in cloud endpoint is set but serves no model right now. */
+  cloudUnavailable?: boolean
   onConnect: () => void
   inspectorOpen: boolean
   onToggleInspector: () => void
@@ -1293,7 +1314,7 @@ export function ChatPane({
   const previousGroups = useRef(new Map<string, ChatMessage[]>())
   const timelineGroups = useMemo(() => {
     const timelineMessages = person ? messages : visibleConversationMessages(conversation, messages)
-    const groups = groupConversationMessages(timelineMessages.filter((message) => !deletedIds.has(message.id)))
+    const groups = groupConversationMessages(hideStaleErrors(timelineMessages.filter((message) => !deletedIds.has(message.id))))
       .map((group) => sameItems(previousGroups.current.get(group[0].id), group) ?? group)
     previousGroups.current = new Map(groups.map((group) => [group[0].id, group]))
     return groups
@@ -1559,9 +1580,26 @@ export function ChatPane({
     else stopVoiceInput()
   }
 
+  // A signed-in chat with no cloud model has nowhere to send to.
+  const cloudBlocked = offline && cloudUnavailable
+  const [reconnecting, setReconnecting] = useState(false)
+  const [reconnectFailed, setReconnectFailed] = useState(false)
+  const reconnect = async (): Promise<void> => {
+    setReconnecting(true)
+    setReconnectFailed(false)
+    try {
+      const snapshot = await window.douchat.reconnectCloud()
+      if (snapshot.runtime.mode === 'offline') setReconnectFailed(true)
+    } catch {
+      setReconnectFailed(true)
+    } finally {
+      setReconnecting(false)
+    }
+  }
+
   const send = async (): Promise<void> => {
     const content = draft.trim()
-    if ((!content && !pendingImages.length && !quotedMessage) || !conversation || sending || readingFiles || voiceState !== 'idle') return
+    if ((!content && !pendingImages.length && !quotedMessage) || !conversation || sending || readingFiles || voiceState !== 'idle' || cloudBlocked) return
     const quote = quotedMessage
     const outgoing = quote ? `> ${quote.authorId === 'user' ? userName : quote.authorName}:\n${messageText(quote).split(/\r?\n/).map((line) => `> ${line}`).join('\n')}\n\n${content}` : content
     const originalDraft = draft
@@ -1819,12 +1857,18 @@ export function ChatPane({
       </div>}
       <div className="composer-wrap">
         {messageActionError && <div className="composer-attachment-error" role="alert">{messageActionError}</div>}
-        {offline && (
+        {offline && (cloudUnavailable ? (
+          // Signed in: nothing to set up, so offer to reconnect, not to pick an agent.
+          <div className="offline-banner" role="status">
+            <span>{t(reconnectFailed ? 'Still cannot reach Douchat Cloud. Try again later.' : 'Douchat Cloud is unavailable right now. Messages cannot be sent.')}</span>
+            <button disabled={reconnecting} onClick={() => void reconnect()}>{t(reconnecting ? 'Connecting…' : 'Retry')}</button>
+          </div>
+        ) : (
           <div className="offline-banner">
             <span>{t('Choose a local agent or connect a model endpoint to start chatting.')}</span>
             <button onClick={onConnect}>{t('Choose agent')}</button>
           </div>
-        )}
+        ))}
         {mention && mentionOptions.length > 0 && (
           <div className="mention-menu" role="listbox" aria-label={t('Mention a member')}>
             <div className="mention-title">{t('Mention a member')}</div>
@@ -1946,7 +1990,7 @@ export function ChatPane({
             {!working && <button
               className="send-button"
               onClick={() => void send()}
-              disabled={sending || readingFiles || voiceState !== 'idle' || (!draft.trim() && !pendingImages.length && !quotedMessage)}
+              disabled={sending || readingFiles || voiceState !== 'idle' || cloudBlocked || (!draft.trim() && !pendingImages.length && !quotedMessage)}
               aria-label={t('Send message')}
             >
               {t('Send')}

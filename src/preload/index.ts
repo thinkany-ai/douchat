@@ -152,6 +152,7 @@ const api: DouchatApi = {
   revokeSupportShare: (shareId: string) => ipcRenderer.invoke('douchat:revoke-support-share', shareId),
   setEndpoint: (input: EndpointInput) => ipcRenderer.invoke('douchat:set-endpoint', input),
   testEndpoint: (input: EndpointInput) => ipcRenderer.invoke('douchat:test-endpoint', input),
+  reconnectCloud: () => ipcRenderer.invoke('douchat:reconnect-cloud'),
   createRoutine: (input: CreateRoutineInput) => ipcRenderer.invoke('douchat:create-routine', input),
   deleteRoutine: (routineId: string) => ipcRenderer.invoke('douchat:delete-routine', routineId),
   setRoutineEnabled: (routineId: string, enabled: boolean) =>

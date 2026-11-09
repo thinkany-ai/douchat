@@ -656,6 +656,7 @@ function WorkspaceApp(): ReactElement {
         members={members}
         activity={activity}
         offline={!conversation?.remoteRoomId && snapshot.runtime.mode === 'offline' && !members.some((agent) => agent.localAgentId)}
+        cloudUnavailable={Boolean(snapshot.runtime.endpoint)}
         onConnect={() => {
           const agent = members.find((member) => member.id === conversation?.leadAgentId) ?? members[0]
           setDialog(agent ? { kind: 'bot', agent } : { kind: 'endpoint' })

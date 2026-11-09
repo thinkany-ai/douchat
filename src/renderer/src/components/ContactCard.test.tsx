@@ -72,6 +72,15 @@ describe('group contact profile', () => {
     expect(configure).toHaveBeenCalledWith(agents[0])
   })
 
+  it('never labels an unresolved custom binding as the cloud default', async () => {
+    Object.defineProperty(window, 'douchat', { configurable: true, value: { getCustomModels: vi.fn().mockResolvedValue({ providers: [], defaultModel: '' }) } })
+    const follower = { ...agents[0], provider: 'custom:@unavailable', model: 'default', followDefaultModel: true }
+    await act(async () => root.render(<ContactCard snapshot={{ ...snapshot, agents: [follower] }} selection={{ kind: 'bot', id: follower.id }}
+      onConfigureModel={vi.fn()} onMessage={vi.fn()} onStartDirect={vi.fn()} onEditBot={vi.fn()} onDeleteBot={vi.fn()} onTogglePin={vi.fn()} />))
+    expect(container.textContent).toContain('Follow default model · No default model set')
+    expect(container.textContent).not.toContain('Cloud default')
+  })
+
   it('shows a local model and opens the unified editor from the profile actions', async () => {
     Object.defineProperty(window, 'douchat', { configurable: true, value: { listLocalAgentModels: vi.fn().mockResolvedValue({ models: [{ id: 'provider/test', name: 'Test Model' }] }) } })
     const configure = vi.fn()

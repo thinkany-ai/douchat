@@ -128,9 +128,14 @@ export function ContactCard({
     const configuredProvider = agent.provider.startsWith('custom:') ? customModels?.providers.find(provider => `custom:${provider.id}` === agent.provider) : undefined
     const builtInModel = (snapshot.models ?? []).find(option => option.model === modelId)
     const localName = localModelLabel?.agentId === agent.id && localModelLabel.model === agent.model ? localModelLabel.name : undefined
+    const customBound = agent.provider.startsWith('custom:')
+    // A custom binding never falls back to the cloud, so never label it as cloud.
+    const customMissing = customBound && !!customModels && (!configuredProvider || !configuredProvider.models.includes(agent.model))
     const resolvedModelLabel = agent.localAgentId
       ? localName || modelId || t('Use agent default')
-      : configuredProvider?.modelLabels?.[agent.model] || builtInModel?.label || modelId || t('Cloud default')
+      : customMissing
+        ? t(agent.followDefaultModel ? 'No default model set' : 'Model unavailable')
+        : configuredProvider?.modelLabels?.[agent.model] || builtInModel?.label || modelId || t('Cloud default')
     const modelLabel = agent.followDefaultModel ? `${t('Follow default model')} · ${resolvedModelLabel}` : resolvedModelLabel
     const direct = snapshot.conversations.find(
       (conversation) => conversation.type === 'direct' && !conversation.id.startsWith('im-') && conversation.agentIds[0] === agent.id

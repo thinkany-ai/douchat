@@ -21,8 +21,13 @@ describe('messenger surface theme styles', () => {
     )
   })
 
+  it('records every chat row height so offscreen rows keep their real size', () => {
+    expect(styles).toMatch(/\.timeline-item \{\s*contain-intrinsic-size: auto 120px;\s*\}/)
+    expect(styles).toMatch(/\.timeline-item\[data-offscreen\] \{\s*content-visibility: auto;\s*\}/)
+  })
+
   it('lets the contact profile use the same workspace background as chat', () => {
-    expect(styles).toMatch(/\.messenger \.workspace \{\s*background: #fff;\s*\}/)
+    expect(styles).toMatch(/\.messenger \.workspace \{\s*background: var\(--pane\);\s*\}/)
     expect(styles).not.toMatch(/\.messenger \.contact-profile-pane \{[^}]*background:/)
   })
 
