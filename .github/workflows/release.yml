@@ -183,7 +183,9 @@ jobs:
               if [ "$RELEASE_BUILD" = "true" ]; then npm run release:mac; else npm run package:mac; fi
               ;;
             windows-x64) npm run package:win ;;
-            linux-x64) npm run package:linux ;;
+            linux-x64)
+              if [ "$RELEASE_BUILD" = "true" ]; then npm run release:linux; else npm run package:linux; fi
+              ;;
             *) echo "Unsupported platform: $TARGET_PLATFORM" >&2; exit 1 ;;
           esac
 
