@@ -45,6 +45,9 @@ export interface LocalAgent {
   unavailable?: 'disabled' | 'missing'
   /** Present for agents bound to a douchat-host daemon: they never run on this computer. */
   daemon?: { connectionId: string; hostId: string; label: string }
+  /** Present for agents on an agl device: Douchat drives them through agl, never on this computer.
+   * `agent` is agl's agent id (stored as the binding's `executable`). */
+  agl?: { connectionId: string; machineId: string; agent: string; label: string }
 }
 
 /** Where an agent's commands run. A saved workspace path is only meaningful on
@@ -144,7 +147,10 @@ export interface RemoteAgentBinding {
   args: string[]
 }
 
-export type RemoteConnectionKind = 'ssh' | 'daemon'
+export type RemoteConnectionKind = 'ssh' | 'daemon' | 'agl'
+
+/** A machine linked to this Douchat account through the agl daemon (Discover → Devices & Environments). */
+export interface AglConnectionTarget { machineId: string; serviceUrl: string; ownerId: string }
 
 /** A douchat-host enrolled for one Douchat account (remote-connections.md 6.3). */
 export interface DaemonConnectionTarget { hostId: string; serviceUrl: string; ownerId: string; info?: { os?: string; arch?: string; version?: string } }
@@ -161,6 +167,8 @@ export interface RemoteConnection {
   ssh?: { host: string; port?: number; user?: string; identityFile?: string }
   /** Present exactly when kind is 'daemon'. */
   daemon?: DaemonConnectionTarget
+  /** Present exactly when kind is 'agl'. */
+  agl?: AglConnectionTarget
   /** Last validated probe of the server. */
   probe?: { home: string; path: string; checkedAt: number }
   createdAt: number
@@ -201,6 +209,31 @@ export interface DaemonEnrollment {
   fingerprint: string
 }
 export interface DaemonEnrollmentResult { hostId: string; info: { os?: string; arch?: string; version?: string } }
+
+/** A one-time agl pairing code and the command that installs agl and links the machine. */
+export interface AglPairing { code: string; expiresAt: number; installCommand: string; hubUrl: string }
+/** One agent agl reports on a device (`agents.list`, or the device's last hello). */
+export interface AglDeviceAgent { id: string; name: string; available: boolean; version?: string; features?: string[]; status?: string }
+/** A device as the Douchat service reports it (`agl-device-list`). */
+export interface AglDevice {
+  machineId: string
+  name: string
+  hostname: string
+  os: string
+  arch: string
+  version: string
+  online: boolean
+  lastSeenAt: number | null
+  pairedAt: number
+  agents: AglDeviceAgent[]
+}
+/** A device together with what this computer keeps for it. */
+export interface AglDeviceView extends AglDevice {
+  /** The local connection its agents run on, once agents were added. */
+  connectionId?: string
+  enabled?: boolean
+  agentIds: string[]
+}
 
 export interface DiscoveredRemoteAgent {
   adapter: RemoteAgentAdapter
@@ -843,6 +876,14 @@ export interface DouchatApi extends AccountDataApi, DesktopDeviceApi {
   cancelDaemonEnrollment: (id: string) => Promise<void>
   /** Saves the enrolled host as a connection under a local name. */
   completeDaemonEnrollment: (id: string, input: { name: string }) => Promise<ConnectionView[]>
+  /** agl devices (Discover → Devices & Environments). */
+  createAglPairing: () => Promise<AglPairing>
+  listAglDevices: () => Promise<AglDeviceView[]>
+  renameAglDevice: (machineId: string, name: string) => Promise<AglDeviceView[]>
+  /** Unlinks the device from the account; `mode` applies to agents still on it. */
+  removeAglDevice: (machineId: string, mode: 'disable-agents' | 'delete-agents') => Promise<AglDeviceView[]>
+  discoverAglAgents: (machineId: string) => Promise<AglDeviceAgent[]>
+  addAglAgents: (machineId: string, agents: Array<{ id: string; name: string }>) => Promise<LocalAgent[]>
   removeCustomLocalAgent: (id: string) => Promise<LocalAgent[]>
   getAttachmentData: (attachmentId: string) => Promise<string>
   getSnapshot: () => Promise<AppSnapshot>

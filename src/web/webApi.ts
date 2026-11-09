@@ -3,6 +3,7 @@ import { ACTIVITY_STALE_MS, type SupportShare, type RoomReadMark, type SyncedAct
 import type { SocialAction, SocialResult } from '../shared/social'
 import type {
   AgentConfig,
+  AglDevice,
   AppSnapshot,
   ChatMessage,
   Conversation,
@@ -720,6 +721,13 @@ export function createWebApi(): DouchatApi {
     detectLocalAgents: viaDesktop('detectLocalAgents', async () => []),
     listSshHosts: viaDesktop('listSshHosts', async () => []),
     listConnections: viaDesktop('listConnections', async () => []),
+    // Devices are read from the service, so the list shows even while the desktop app is offline.
+    // Adding, renaming and removing them, and running their agents, happen in the desktop app.
+    listAglDevices: async () => {
+      const data = await service<{ devices?: unknown }>('/api/desktop-auth/social', { method: 'POST', body: JSON.stringify({ action: 'agl-device-list' }) })
+      return Array.isArray(data?.devices) ? data.devices.filter((item): item is AglDevice => Boolean(item && typeof item === 'object' && typeof (item as AglDevice).machineId === 'string'))
+        .map(device => ({ ...device, agents: Array.isArray(device.agents) ? device.agents : [], agentIds: [] })) : []
+    },
     listRuntimeModels: viaDesktop('listRuntimeModels', async () => ({ models: [], source: 'manual' as const, configurable: false })),
     listIMChannels: viaDesktop('listIMChannels', async () => []),
     getCustomModels: viaDesktop('getCustomModels', async () => ({ providers: [], defaultModel: '' })),

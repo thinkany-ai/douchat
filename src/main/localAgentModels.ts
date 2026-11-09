@@ -65,7 +65,9 @@ export function listLocalAgentModels(id: string): Promise<LocalModelList> {
 }
 
 async function discoverLocalAgentModels(id: string, signal: AbortSignal): Promise<LocalModelList> {
-  const agent = await validateLocalAgent(id)
+  const agent = await validateLocalAgent(id, { allowAgl: true })
+  // agl picks the agent's default model on the device; choosing one is not offered in v1.
+  if (agent.agl) return { models: [], source: 'manual', configurable: false }
   if (agent.remote) return discoverRemoteModels(agent, agent.remote, signal)
   if (!configurableLocalAgents.includes(id)) return { models: [], source: 'manual', configurable: false }
   // These CLIs accept a model override but don't expose a stable non-interactive catalog.

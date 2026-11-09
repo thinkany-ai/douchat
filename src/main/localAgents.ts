@@ -30,7 +30,8 @@ let connectionStore: ConnectionStore | undefined
 let connectionAccountId = ''
 export function setConnectionAccount(accountId: string): void { connectionAccountId = accountId }
 const otherAccountHost = (connection: RemoteConnection | undefined): boolean =>
-  connection?.kind === 'daemon' && connection.daemon?.ownerId !== connectionAccountId
+  (connection?.kind === 'daemon' && connection.daemon?.ownerId !== connectionAccountId)
+  || (connection?.kind === 'agl' && connection.agl?.ownerId !== connectionAccountId)
 export function configureLocalAgentRegistry(userDataPath?: string, connections?: ConnectionStore): void {
   customRegistryPath = userDataPath ? join(userDataPath, 'local-agents.json') : undefined
   connectionStore = userDataPath ? connections ?? new ConnectionStore(join(userDataPath, 'connections.json')) : undefined
@@ -73,12 +74,16 @@ function placementTarget(definition: CustomLocalAgentDefinition, connection: Rem
 /** An agent bound to a douchat-host: its tasks are claimed by the host, never run here. */
 export interface DaemonPlacementInfo { daemon: { connectionId: string; hostId: string; label: string }; connection: RemoteConnection; binding: RemoteAgentBinding }
 
-async function placementOf(definition: CustomLocalAgentDefinition, connections: RemoteConnection[]): Promise<RemotePlacementInfo | DaemonPlacementInfo | { unavailable: 'disabled' | 'missing'; connectionId: string } | undefined> {
+/** An agent on an agl device: Douchat drives it through agl (agl/aglExecutor.ts); `binding.executable` is agl's agent id. */
+export interface AglPlacementInfo { agl: NonNullable<RemoteConnection['agl']>; connection: RemoteConnection; binding: RemoteAgentBinding }
+
+async function placementOf(definition: CustomLocalAgentDefinition, connections: RemoteConnection[]): Promise<RemotePlacementInfo | DaemonPlacementInfo | AglPlacementInfo | { unavailable: 'disabled' | 'missing'; connectionId: string } | undefined> {
   const binding = definition.remoteAgent
   if (!binding) return undefined
   const connection = connections.find(item => item.id === binding.connectionId)
   if (!connection) return { unavailable: 'missing', connectionId: binding.connectionId }
   if (!connection.enabled) return { unavailable: 'disabled', connectionId: connection.id }
+  if (connection.kind === 'agl') return connection.agl ? { agl: connection.agl, connection, binding } : { unavailable: 'missing', connectionId: connection.id }
   // A douchat-host connection runs the agent exactly like SSH: this computer
   // orchestrates, and only the transport differs (remote/daemonRelay.ts).
   return { spec: connectionSpec(connection, binding), target: placementTarget(definition, connection), connection }
@@ -99,7 +104,7 @@ async function customDefinitions(): Promise<CustomLocalAgentDefinition[]> {
     // Remote even while unavailable: earlier replies stay marked as coming from a server.
     if (item.remoteAgent) {
       const connection = connections.find(entry => entry.id === item.remoteAgent!.connectionId)
-      remoteLabels.set(item.id, connection ? (connection.kind === 'daemon' ? connection.name : connectionLabel(connection)) : 'a removed server')
+      remoteLabels.set(item.id, connection ? (connection.kind === 'ssh' ? connectionLabel(connection) : connection.name) : 'a removed server')
       // Daemon agents are no longer host-claimed (P2 relay): they run from here like SSH agents,
       // so `daemonAgents` stays empty and nothing routes them to a host executor.
     }
@@ -137,9 +142,24 @@ export async function remoteAgentPlacement(id: string | undefined): Promise<Remo
   if (!definition) return undefined
   const placement = await placementOf(definition, connectionStore ? await connectionStore.list() : [])
   if (placement && 'daemon' in placement) throw new Error(`This agent runs on the daemon connection "${placement.daemon.label}" and cannot run on this computer.`)
-  if (definition.remoteAgent && daemonAgents.has(definition.id)) throw new Error('This agent\'s daemon connection is turned off. Turn it on in Settings → Connections.')
-  if (placement && 'unavailable' in placement) throw new Error(placement.unavailable === 'disabled' ? 'This agent\'s server connection is turned off. Turn it on in Settings → Connections.' : 'This agent\'s server connection was removed. Choose another connection for it in Settings → Agents.')
+  if (definition.remoteAgent && daemonAgents.has(definition.id)) throw new Error('This agent\'s daemon connection is turned off. Turn it on in Discover → Devices & Environments.')
+  if (placement && 'unavailable' in placement) {
+    const device = (await connectionStore?.get(placement.connectionId))?.kind === 'agl'
+    if (device) throw new Error(placement.unavailable === 'disabled' ? 'This agent\'s device is turned off. Turn it on in Discover → Devices & Environments.' : 'This agent\'s device was removed. Add the device again in Discover → Devices & Environments.')
+    throw new Error(placement.unavailable === 'disabled' ? 'This agent\'s server connection is turned off. Turn it on in Discover → Devices & Environments.' : 'This agent\'s server connection was removed. Choose another connection for it in Settings → Agents.')
+  }
+  // Agents on an agl device never run through SSH or on this computer; see aglAgentPlacement.
+  if (placement && 'agl' in placement) return undefined
   return placement
+}
+/** Fresh lookup of an agent on an agl device; undefined for every other agent, and for
+ * one whose device is turned off or removed (remoteAgentPlacement reports why). */
+export async function aglAgentPlacement(id: string | undefined): Promise<AglPlacementInfo | undefined> {
+  if (!id || !CUSTOM_ID.test(id)) return undefined
+  const definition = (await customDefinitions()).find(item => item.id === id)
+  if (!definition) return undefined
+  const placement = await placementOf(definition, connectionStore ? await connectionStore.list() : [])
+  return placement && 'agl' in placement && !otherAccountHost(placement.connection) ? placement : undefined
 }
 export function cachedRemoteAgentSpec(id: string | undefined): RemoteAgentSpec | undefined {
   return id ? remoteSpecs.get(id) : undefined
@@ -280,7 +300,8 @@ export async function resolveLocalAgentDraft(id: string | undefined, input: Cust
     if (id && !existing?.remote && !existing?.connectionId) throw new Error('The run location of an existing agent cannot be changed. Add a new agent instead.')
     const connection = await connectionRegistry().get(value.remoteAgent.connectionId)
     if (!connection) throw new Error('Choose a server connection.')
-    if (!connection.enabled) throw new Error('This server connection is turned off. Turn it on in Settings → Connections.')
+    if (!connection.enabled) throw new Error('This server connection is turned off. Turn it on in Discover → Devices & Environments.')
+    if (connection.kind === 'agl') throw new Error('Agents on a device are added from Discover → Devices & Environments.')
     const remote = await probeRemoteAgent(connectionSpec(connection, value.remoteAgent), signal, true)
     // A draft is tested on the connection as it is now; it has no folders yet.
     return remoteLocalAgent(id ?? `custom:${randomUUID()}`, value.name, value.avatar, remote, { executionTargetId: connectionTargetId(connection), targetRevision: connection.targetRevision }, connection.id)
@@ -381,8 +402,12 @@ async function detectLocalAgentsInternal(dependencies: DetectionDependencies = {
     // Remote agents are not resolved through this computer's PATH; the server is probed at launch.
     if (override?.remoteAgent && isCustom) {
       const placement = await placementOf(override, connections)
-      // Shown wherever the agent's server is named; the address stays in Settings → Connections.
+      // Shown wherever the agent's server is named; the address stays in Discover → Devices & Environments.
       const connectionName = connections.find(item => item.id === override.remoteAgent!.connectionId)?.name
+      if (placement && 'agl' in placement) return { id, name: override.name, command: override.remoteAgent.executable, args: [], avatar: override.avatar,
+        installed: true, discovered: true, version: placement.connection.name, chatSupported: true, status: 'ready', authentication: 'unchecked', custom: true,
+        connectionId: placement.connection.id, connectionName, remoteAgent: override.remoteAgent,
+        agl: { connectionId: placement.connection.id, machineId: placement.agl.machineId, agent: override.remoteAgent.executable, label: placement.connection.name } } satisfies LocalAgent
       if (placement && 'daemon' in placement) return { id, name: override.name, command: override.remoteAgent.executable, args: override.remoteAgent.args, avatar: override.avatar,
         installed: true, discovered: true, version: placement.daemon.label, chatSupported: true, status: 'ready', authentication: 'unchecked', custom: true,
         connectionId: placement.connection.id, connectionName, remoteAgent: override.remoteAgent, daemon: placement.daemon } satisfies LocalAgent
@@ -426,10 +451,11 @@ function remoteLocalAgent(id: string, name: string, avatar: string | undefined, 
 }
 
 /** A runnable local agent. Daemon agents are refused unless `allowDaemon`: they must never start here. */
-export async function validateLocalAgent(id: string, options: { allowDaemon?: boolean } = {}): Promise<LocalAgent> {
+export async function validateLocalAgent(id: string, options: { allowDaemon?: boolean; allowAgl?: boolean } = {}): Promise<LocalAgent> {
   const agent = (await detectLocalAgents({ version: async () => undefined }, id)).find((item) => item.id === id)
   if (!agent) throw new Error('Unknown local agent')
   if (agent.daemon && !options.allowDaemon) throw new Error(`${agent.name} runs on the daemon connection "${agent.daemon.label}" and cannot run on this computer.`)
+  if (agent.agl && !options.allowAgl) throw new Error(`${agent.name} runs on the device "${agent.agl.label}" and cannot run on this computer.`)
   if (!agent.installed) throw new Error(`${agent.name} is not installed. Refresh Agents in Settings after installing it.`)
   return agent
 }

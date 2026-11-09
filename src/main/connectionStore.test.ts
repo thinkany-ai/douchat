@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import * as storeModule from './connectionStore'
-import { ConnectionStore, legacyTargetId, migrateConnections, validateConnectionInput } from './connectionStore'
-import { configureLocalAgentRegistry, remoteAgentPlacement } from './localAgents'
+import { ConnectionStore, connectionSpec, connectionTargetId, legacyTargetId, migrateConnections, validateConnectionInput } from './connectionStore'
+import { aglAgentPlacement, configureLocalAgentRegistry, detectLocalAgents, remoteAgentPlacement, setConnectionAccount, validateLocalAgent } from './localAgents'
 
 let directory = ''
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'douchat-connections-')) })
@@ -40,6 +40,65 @@ describe('connection store', () => {
       expect(() => validateConnectionInput(bad), JSON.stringify(bad)).toThrow()
     await writeFile(join(directory, 'connections.json'), JSON.stringify({ version: 1, connections: [{ id: 'conn_bad', ssh: { host: 'x' } }, { id: `conn_${'a'.repeat(32)}`, name: 'ok', ssh: { host: 'ok' }, targetRevision: 0 }] }))
     expect((await new ConnectionStore(join(directory, 'connections.json')).list()).map(item => item.name)).toEqual(['ok'])
+  })
+})
+
+describe('agl device connections', () => {
+  const agl = { machineId: 'mac-studio-01', serviceUrl: 'https://douchat.ai/agl', ownerId: 'user_1' }
+  it('keeps valid agl entries on read and drops malformed ones', async () => {
+    const valid = { id: `conn_${'b'.repeat(32)}`, name: 'Studio', kind: 'agl', enabled: true, targetRevision: 0, agl, createdAt: 1 }
+    await writeFile(join(directory, 'connections.json'), JSON.stringify({ version: 1, connections: [
+      valid,
+      { ...valid, id: `conn_${'c'.repeat(32)}`, agl: { ...agl, machineId: 'bad id with spaces' } },
+      { ...valid, id: `conn_${'d'.repeat(32)}`, agl: { ...agl, machineId: 'x'.repeat(65) } },
+      { ...valid, id: `conn_${'e'.repeat(32)}`, agl: { ...agl, serviceUrl: 'http://douchat.ai' } },
+      { ...valid, id: `conn_${'f'.repeat(32)}`, agl: { ...agl, ownerId: 'a/b' } },
+      { ...valid, id: `conn_${'1'.repeat(32)}`, name: '' },
+      { ...valid, id: 'conn_short' },
+      { ...valid, id: `conn_${'2'.repeat(32)}`, agl: undefined }
+    ] }))
+    const list = await new ConnectionStore(join(directory, 'connections.json')).list()
+    // The service URL is kept as its origin, like a douchat-host's.
+    expect(list).toEqual([{ ...valid, agl: { ...agl, serviceUrl: 'https://douchat.ai' } }])
+    expect(connectionTargetId(list[0])).toBe('agl:mac-studio-01')
+    expect(() => connectionSpec(list[0], { adapter: 'claude', executable: 'claude', args: [] })).toThrow('agl')
+  })
+  it('saves a device once per machine and account, renaming it on a second save', async () => {
+    const store = new ConnectionStore(join(directory, 'connections.json'))
+    const created = await store.saveAgl({ name: 'Studio', agl })
+    expect(created).toMatchObject({ kind: 'agl', name: 'Studio', enabled: true, agl: { machineId: 'mac-studio-01', serviceUrl: 'https://douchat.ai' } })
+    const renamed = await store.saveAgl({ name: 'Studio Mac', agl })
+    expect(renamed.id).toBe(created.id)
+    expect((await store.list()).map(item => item.name)).toEqual(['Studio Mac'])
+    // The same machine linked by another account is a separate device.
+    await store.saveAgl({ name: 'Shared', agl: { ...agl, ownerId: 'user_2' } })
+    expect(await store.list()).toHaveLength(2)
+    await expect(store.saveAgl({ name: 'x', agl: { ...agl, machineId: '' } })).rejects.toThrow('Invalid device.')
+    await expect(store.saveAgl({ name: ' ', agl })).rejects.toThrow('device name')
+    await expect(store.save({ id: created.id, name: 'x', ssh: { host: 'box' } })).rejects.toThrow('A device cannot be changed into an SSH connection.')
+  })
+  it('runs agents on a device only through agl, never through SSH or on this computer', async () => {
+    const store = new ConnectionStore(join(directory, 'connections.json'))
+    configureLocalAgentRegistry(directory, store)
+    setConnectionAccount('user_1')
+    const device = await store.saveAgl({ name: 'Studio', agl })
+    await writeRegistry([{ id: id(1), name: 'Claude Code · Studio', command: 'claude', args: [], remoteAgent: { connectionId: device.id, adapter: 'claude', executable: 'claude', args: [] } }])
+    expect(await remoteAgentPlacement(id(1))).toBeUndefined()
+    expect(await aglAgentPlacement(id(1))).toMatchObject({ agl: { machineId: 'mac-studio-01' }, connection: { id: device.id }, binding: { executable: 'claude' } })
+    const [agent] = await detectLocalAgents({ version: async () => undefined }, id(1))
+    expect(agent).toMatchObject({ installed: true, connectionId: device.id, connectionName: 'Studio', agl: { machineId: 'mac-studio-01', agent: 'claude', label: 'Studio' } })
+    expect(agent.remote).toBeUndefined()
+    await expect(validateLocalAgent(id(1))).rejects.toThrow('runs on the device "Studio" and cannot run on this computer')
+    // Turned off: no placement, and the turn reports why.
+    await store.setEnabled(device.id, false)
+    expect(await aglAgentPlacement(id(1))).toBeUndefined()
+    await expect(remoteAgentPlacement(id(1))).rejects.toThrow("This agent's device is turned off.")
+    // Another account's device is hidden.
+    await store.setEnabled(device.id, true)
+    setConnectionAccount('user_2')
+    expect(await aglAgentPlacement(id(1))).toBeUndefined()
+    expect(await detectLocalAgents({ version: async () => undefined }, id(1))).toEqual([])
+    setConnectionAccount('')
   })
 })
 
