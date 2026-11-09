@@ -7,6 +7,9 @@ export const AGL_PROTOCOL = 1
  * Where the shared agl daemon on this computer stands:
  * - `unsupported`: Windows (agl has no Windows build); the desktop runtime is used.
  * - `disabled`: a development run without DOUCHAT_AGL_HOME (the shared ~/.agl is left alone).
+ * - `off`: the user has not enabled agl yet, or turned it off. Douchat only reads
+ *   `agl --version` and `agl status --json` to show where it stands; it installs,
+ *   starts, updates and links nothing.
  * - `starting`: checking, installing or starting.
  * - `not-installed`: no agl in the agl home and none bundled with the app.
  * - `needs-update`: the agl that runs is older than {@link AGL_MIN_VERSION} or speaks another protocol.
@@ -14,7 +17,7 @@ export const AGL_PROTOCOL = 1
  * - `running`: connected to the daemon.
  * - `error`: the last attempt failed; `error` says why.
  */
-export type AglState = 'unsupported' | 'disabled' | 'starting' | 'not-installed' | 'needs-update' | 'stopped' | 'running' | 'error'
+export type AglState = 'unsupported' | 'disabled' | 'off' | 'starting' | 'not-installed' | 'needs-update' | 'stopped' | 'running' | 'error'
 
 export interface AglUpdateInfo {
   checkedAt?: number
@@ -58,6 +61,12 @@ export interface AglStatusView {
 
 /** Machine-level settings for agl on this computer (not per account). */
 export interface AglSettings {
+  /**
+   * The user agreed to let Douchat install agl in the shared ~/.agl, keep it
+   * running and up to date, and link this computer to the account. Undefined:
+   * not asked yet (the one-time card shows); false: "Not now" or turned off.
+   */
+  enabled?: boolean
   /** Link this computer to the signed-in Douchat account through agl, so it shows up in Devices. */
   autoLink: boolean
   /** Experimental: detect local agents and their models through agl instead of the desktop's own probes. */
@@ -69,6 +78,7 @@ export const DEFAULT_AGL_SETTINGS: AglSettings = { autoLink: true, useForLocalAg
 export function aglSettings(value: unknown): AglSettings {
   const input = value && typeof value === 'object' ? value as Record<string, unknown> : {}
   return {
+    ...(typeof input.enabled === 'boolean' ? { enabled: input.enabled } : {}),
     autoLink: typeof input.autoLink === 'boolean' ? input.autoLink : DEFAULT_AGL_SETTINGS.autoLink,
     useForLocalAgents: typeof input.useForLocalAgents === 'boolean' ? input.useForLocalAgents : DEFAULT_AGL_SETTINGS.useForLocalAgents
   }

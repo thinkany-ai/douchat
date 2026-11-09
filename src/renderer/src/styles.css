@@ -7424,4 +7424,11 @@ html.native-dialog-window,
 .agl-switches > label > span { display: flex; flex-direction: column; gap: 4px; font-size: calc(14px * var(--font-scale, 0.92)); }
 .agl-switches small { color: var(--muted); font-size: calc(12px * var(--font-scale, 0.92)); line-height: 1.5; }
 .agl-switches .detail-switch { flex: 0 0 auto; }
+.agl-consent { max-width: 640px; margin: 0 0 18px; padding: 16px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.agl-consent h2 { margin: 0 0 6px; font-size: calc(14px * var(--font-scale, 0.92)); font-weight: 650; }
+.agl-consent p, .agl-consent li { margin: 0; font-size: calc(13px * var(--font-scale, 0.92)); line-height: 1.55; }
+.agl-consent ul { margin: 6px 0 10px; padding-left: 20px; }
+.agl-consent .settings-note { margin: 0; }
+.agl-consent-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.agl-consent-actions .primary-button { padding: 7px 14px; border-radius: 8px; }
 .this-computer-badge { margin-left: 8px; vertical-align: 1px; font-weight: 400; }
