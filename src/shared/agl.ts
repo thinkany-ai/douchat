@@ -69,7 +69,7 @@ export interface AglSettings {
   enabled?: boolean
   /** Link this computer to the signed-in Douchat account through agl, so it shows up in Devices. */
   autoLink: boolean
-  /** Experimental: detect local agents and their models through agl instead of the desktop's own probes. */
+  /** Experimental: detect local agents and their models through agl instead of the desktop's own probes, and run Codex through agl. */
   useForLocalAgents: boolean
 }
 

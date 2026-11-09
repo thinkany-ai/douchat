@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { access, chmod, copyFile, mkdir, rename, rm } from 'node:fs/promises'
+import { access, chmod, copyFile, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { homedir, userInfo } from 'node:os'
+import { homedir, tmpdir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import type { LocalAgentImage } from '../../shared/agentExecutor'
 import { AglClient, type CreateSession, type SessionMeta } from './aglClient'
+import type { AglLocalExecutorOptions } from './aglLocalExecutor'
 import type { AglCommandResult, AglDaemonConnection, AglRunner } from './aglLifecycle'
 
 /** The user's real, shared agl home. */
@@ -89,4 +91,22 @@ export function localSessionParams(params: CreateSession): CreateSession {
 /** Creates a session on the local daemon, always local-only (see {@link localSessionParams}). */
 export function createLocalSession(client: Pick<AglClient, 'createSession'>, params: CreateSession): Promise<SessionMeta> {
   return client.createSession(localSessionParams(params))
+}
+
+/** The folders and files the local agl executor works with, as the desktop runtime lays them out. */
+export const aglLocalFiles: Pick<AglLocalExecutorOptions, 'scratch' | 'writeImage' | 'inputFolder'> = {
+  scratch: async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'douchat-session-'))
+    return { directory, remove: () => rm(directory, { recursive: true, force: true }) }
+  },
+  writeImage: async (directory: string, image: LocalAgentImage) => {
+    const path = join(directory, `input-${randomBytes(12).toString('hex')}.${image.mimeType.split('/')[1]}`)
+    await writeFile(path, image.data, { mode: 0o600 })
+    return path
+  },
+  inputFolder: async (directory: string) => {
+    const folder = join(directory, `.douchat-input-${randomBytes(12).toString('hex')}`)
+    await mkdir(folder, { mode: 0o700 })
+    return { directory: folder, remove: () => rm(folder, { recursive: true, force: true }) }
+  }
 }
