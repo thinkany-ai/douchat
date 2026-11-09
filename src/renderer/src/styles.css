@@ -7410,3 +7410,17 @@ html.native-dialog-window,
 .local-agent-editor label.discovered-agent.added { cursor: default; }
 .discovered-agent.added :is(.local-agent-icon, .local-agent-copy) { opacity: .55; }
 .discovered-agent-added { color: var(--muted); font-size: calc(12px * var(--font-scale, 0.92)); white-space: nowrap; }
+
+/* Settings → Agents → agl */
+.agl-settings { margin-top: 28px; padding-top: 4px; border-top: 1px solid var(--line); }
+.agl-settings h2 { display: flex; align-items: center; gap: 10px; }
+.agl-settings h2 .connection-status { font-weight: 400; }
+.agl-facts { display: grid; gap: 0; margin: 0 0 16px; max-width: 640px; font-size: calc(13px * var(--font-scale, 0.92)); }
+.agl-facts > div { display: flex; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.agl-facts dt { flex: 0 0 120px; color: var(--muted); }
+.agl-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.agl-switches { max-width: 640px; }
+.agl-switches > label { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.agl-switches > label > span { display: flex; flex-direction: column; gap: 4px; font-size: calc(14px * var(--font-scale, 0.92)); }
+.agl-switches small { color: var(--muted); font-size: calc(12px * var(--font-scale, 0.92)); line-height: 1.5; }
+.agl-switches .detail-switch { flex: 0 0 auto; }

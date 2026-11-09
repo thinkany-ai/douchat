@@ -2,6 +2,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { UserMemoryPanel } from './UserMemoryPanel'
 import { LocalAgentEditor } from './LocalAgentEditor'
 import { ConnectionsPanel } from './ConnectionsPanel'
+import { AglSettingsSection } from './AglSettingsSection'
 import { CustomModelSettings } from './CustomModelSettings'
 import { SchedulingSettings } from './SchedulingSettings'
 import { RemoteMark, agentServer } from './RemoteMark'
@@ -204,6 +205,7 @@ export function SettingsPanel({ user, agents, scanning, error, tab, initialAgent
         {unavailable.length > 0 && <section aria-label={t('Unavailable server agents')}><h2>{t('Server unavailable')} <span>{unavailable.length}</span></h2>{unavailable.map(row)}</section>}
         {desktopOnly.length > 0 && <section aria-label={t('Desktop apps needing a CLI')}><h2>{t('Desktop app only')} <span>{desktopOnly.length}</span></h2>{desktopOnly.map(row)}</section>}
         {missing.length > 0 && <section aria-label={t('Other supported agents')}><h2>{t('Not detected')} <span>{missing.length}</span></h2>{missing.map(row)}</section>}
+        {manageable && source === LOCAL_AGENTS && <AglSettingsSection />}
       </> : tab === 'connections' ? <ConnectionsPanel key={user.id} />
       : tab === 'models' ? <CustomModelSettings /> : tab === 'scheduling' ? <SchedulingSettings /> : tab === 'more' ? <MoreFromUsTab /> : <AboutTab />}
     </main>
