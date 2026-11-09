@@ -899,5 +899,24 @@ const translations: Record<string, string> = {
   'This agent was not found on the device. Scan again.': '设备上没有找到这个智能体，请重新扫描。',
   'Agents on a device work in their default folder there.': '设备上的智能体在设备上的默认文件夹中工作。',
   'The device sent an invalid answer.': '设备返回了无效的响应。', 'The device refused the request.': '设备拒绝了请求。',
-  'The device did not start a session.': '设备未能启动会话。', 'This agent does not run on a device.': '这个智能体不在设备上运行。'
+  'The device did not start a session.': '设备未能启动会话。', 'This agent does not run on a device.': '这个智能体不在设备上运行。',
+  // agl on this computer (Settings → Agents)
+  'Not available on this system': '此系统不可用', 'Off in development builds': '开发版中已关闭', 'Starting…': '正在启动…', 'Not installed': '未安装',
+  'Needs update': '需要更新', 'Not running': '未运行',
+  'Updated to {version} on {time}': '已于 {time} 更新到 {version}',
+  'agl {version} is available; it installs once agents finish their current turns.': 'agl {version} 已发布，智能体完成当前任务后自动安装。',
+  'agl {version} is available.': 'agl {version} 已发布。', 'Up to date · checked {time}': '已是最新 · 检查于 {time}',
+  'agl checks for updates by itself every 12 hours.': 'agl 每 12 小时自动检查一次更新。',
+  'agl runs the coding agents on this computer for Douchat and links it to your account, so it appears in Devices. It is shared with the agl command and other apps, and updates itself.': 'agl 为 Douchat 运行这台电脑上的编程智能体，并把这台电脑关联到你的账号，使其出现在「设备」中。它与 agl 命令和其他应用共用，并会自动更新。',
+  'agl does not support Windows yet. Douchat runs agents on this computer itself.': 'agl 暂不支持 Windows，Douchat 会直接在这台电脑上运行智能体。',
+  'Set DOUCHAT_AGL_HOME to try agl in a development build; the shared ~/.agl is left alone.': '在开发版中设置 DOUCHAT_AGL_HOME 即可试用 agl；共享的 ~/.agl 不会被改动。',
+  'daemon {version}': '守护进程 {version}', '{version} or newer needed': '需要 {version} 或更新版本',
+  'Starts at login': '登录时自动启动', 'Does not start at login': '登录时不自动启动',
+  'Not linked to your account': '未关联到你的账号', 'Removed from your account': '已从你的账号中移除', 'Linked to your account': '已关联到你的账号',
+  'Updates': '更新', 'Folder': '文件夹', 'Last error:': '最近的错误：',
+  'Show this computer in Devices': '在「设备」中显示这台电脑',
+  'Links this computer to your Douchat account through agl, so you can use its agents from your other devices.': '通过 agl 把这台电脑关联到你的 Douchat 账号，以便在其他设备上使用它的智能体。',
+  'Use agl for local agents (experimental)': '通过 agl 使用本机智能体（实验性）',
+  'Detect agents and list their models through agl. Agents still run the way they do now.': '通过 agl 检测智能体并获取模型列表。智能体的运行方式保持不变。',
+  'Agents on this computer are in Settings → Agents.': '这台电脑上的智能体在「设置 → 智能体」中。'
 }
