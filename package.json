@@ -29,6 +29,7 @@
     "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "package:linux": "npm run build && node scripts/fetch-agl.mjs --targets linux-x64 && electron-builder --linux AppImage deb --x64 --publish never",
     "release:mac": "npm run build && node scripts/fetch-agl.mjs --platform mac --release && electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "release:linux": "npm run build && node scripts/fetch-agl.mjs --targets linux-x64 --release && electron-builder --linux AppImage deb --x64 --publish never",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p host/tsconfig.json",
     "build:host": "node scripts/build-host.mjs",
