@@ -89,6 +89,7 @@ it('first launch: installs the bundled agl and the service, connects, and adds D
   const view = await lifecycle.refresh()
   expect(agl.commands).toEqual(['bundled --version', 'agl --version', 'agl status --json', 'agl service install', 'agl status --json'])
   expect(view).toMatchObject({ state: 'running', version: '0.3.12', bundledVersion: '0.3.12', running: true, service: true, machineId: 'machine-1', linked: false })
+  expect(view.busy).toBeUndefined()
   expect(agl.ensureExtraPaths).toHaveBeenCalledWith('/home/.agl', ['/douchat/local-tools/agents/bin'], '/douchat/local-tools')
   expect(agl.calls).toEqual(['ping', 'env.reload'])
   expect(lifecycle.client()).toBe(agl.connection)
