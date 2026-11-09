@@ -90,6 +90,8 @@ function WorkspaceApp(): ReactElement {
     updateSettingsOpen(open)
   }
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(initialRoute?.settingsTab ?? 'profile')
+  /** Settings → Agents opens on this device or server when set (after adding agents in Discover). */
+  const [settingsAgentSource, setSettingsAgentSource] = useState<string>()
   const [discoverPage, setDiscoverPage] = useState<DiscoverPage>(initialRoute?.discoverPage ?? 'automation')
   // The web app mirrors the page in its address, and follows Back/Forward.
   // On a phone the list and the open chat (or contact) are separate screens.
@@ -578,6 +580,9 @@ function WorkspaceApp(): ReactElement {
             runs={snapshot.runs}
             agents={snapshot.agents}
             conversations={snapshot.conversations}
+            localAgents={localAgents}
+            onLocalAgentsChange={setLocalAgents}
+            onShowLocalAgents={(connectionId) => { setSettingsAgentSource(connectionId); setSettingsTab('agents'); setSettingsOpen(true) }}
             onDeleteRoutine={async (id) => setSnapshot(await window.douchat.deleteRoutine(id))}
             onSetRoutineEnabled={async (id, enabled) => setSnapshot(await window.douchat.setRoutineEnabled(id, enabled))}
             onRunRoutineNow={(id) => window.douchat.runRoutineNow(id)}
@@ -807,11 +812,12 @@ function WorkspaceApp(): ReactElement {
           scanning={scanning}
           error={scanError}
           tab={settingsTab}
+          initialAgentSource={settingsAgentSource}
           creditsRefreshToken={creditsRefreshToken}
           creditsAttention={creditsAttention}
           onCreditsAvailable={() => setCreditsAttention(false)}
           onTab={setSettingsTab}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => { setSettingsOpen(false); setSettingsAgentSource(undefined) }}
           onSignOut={async () => {
             const next = await window.douchat.signOut()
             setSettingsOpen(false)

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { ConnectionView, LocalAgent } from '../../../shared/types'
 vi.mock('./NativeDialog', () => ({ NativeDialog: ({ children }: { children: React.ReactNode }) => <div>{children}</div> }))
 vi.mock('../preferences', () => ({ t: (text: string) => text, tr: (text: string, values: Record<string, unknown>) => text.replace(/\{(\w+)\}/g, (_, key) => String(values[key])) }))
-import { ConnectionsPanel } from './ConnectionsPanel'
+import { ConnectionsPanel, ServerConnections } from './ConnectionsPanel'
 
 let container: HTMLDivElement, root: Root
 const view = (extra: Partial<ConnectionView> = {}): ConnectionView => ({ id: `conn_${'a'.repeat(32)}`, name: 'Box', kind: 'ssh', enabled: true, targetRevision: 0, ssh: { host: 'box', user: 'me' }, createdAt: 0, label: 'me@box', agentIds: [], status: { state: 'connected', latencyMs: 40, agents: 0 }, ...extra })
@@ -26,7 +26,8 @@ beforeEach(() => {
   Object.defineProperty(window, 'douchat', { configurable: true, value: api })
 })
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks() })
-const render = async (onAgentsChange = vi.fn()) => { await act(async () => root.render(<ConnectionsPanel onAgentsChange={onAgentsChange} />)); return onAgentsChange }
+// SSH servers moved from Settings → Connections to Discover → Devices & Environments → Environments.
+const render = async (onAgentsChange = vi.fn()) => { await act(async () => root.render(<ServerConnections kind="ssh" onAgentsChange={onAgentsChange} />)); return onAgentsChange }
 const button = (label: string) => [...container.querySelectorAll('button')].find(item => item.textContent === label || item.getAttribute('aria-label') === label)!
 
 it('shows status and toggles a connection off', async () => {
@@ -81,7 +82,7 @@ it('marks agents already added from the server, adds only new ones, then shows t
   const showAgents = vi.fn()
   const existing = { id: 'custom:1', name: 'Codex · Box', command: '/usr/bin/codex', installed: true, discovered: true, custom: true, status: 'ready', chatSupported: true, authentication: 'unchecked',
     remoteAgent: { connectionId: view().id, adapter: 'codex', executable: '/usr/bin/codex', args: [] } } as LocalAgent
-  await act(async () => root.render(<ConnectionsPanel agents={[existing]} onAgentsChange={vi.fn()} onShowAgents={showAgents} />))
+  await act(async () => root.render(<ServerConnections kind="ssh" agents={[existing]} onAgentsChange={vi.fn()} onShowAgents={showAgents} />))
   await act(async () => button('Scan for agents on this server Box').click())
   const rows = [...container.querySelectorAll('.discovered-agent')]
   expect(rows[0].classList.contains('added')).toBe(true)
@@ -92,36 +93,30 @@ it('marks agents already added from the server, adds only new ones, then shows t
   expect(showAgents).toHaveBeenCalledWith(view().id)
 })
 
-it('copies enrollment commands through the desktop bridge and reports success and failure', async () => {
-  await render()
-  await act(async () => button('Host').click())
-  await act(async () => button('Add').click())
-  await act(async () => button('Copy install command').click())
-  expect(api.copyText).toHaveBeenCalledWith('curl https://example.com/install.sh | sh')
-  expect(button('Copy install command').textContent).toBe('Copied')
-  api.copyText.mockRejectedValueOnce(new Error('Clipboard unavailable'))
-  await act(async () => button('Copy install command').click())
-  expect(container.querySelector('[role=alert]')?.textContent).toBe('Could not copy command. Try again.')
-  expect(button('Copy install command').textContent).toBe('Copy')
-  const uninstall = container.querySelector<HTMLButtonElement>('details .daemon-command button')!
-  await act(async () => uninstall.click())
-  expect(api.copyText).toHaveBeenLastCalledWith('douchat-host uninstall')
-  expect(uninstall.textContent).toBe('Copied')
-  expect(container.querySelector('[role=alert]')).toBeNull()
+it('lists douchat-host servers added before agl without offering to add new ones', async () => {
+  const host = view({ id: `conn_${'b'.repeat(32)}`, name: 'Old host', kind: 'daemon', ssh: undefined, daemon: { hostId: `hst_${'0'.repeat(8)}-0000-0000-0000-${'0'.repeat(12)}`, serviceUrl: 'https://douchat.ai', ownerId: 'me' } })
+  api.listConnections.mockResolvedValue([view(), host])
+  await act(async () => root.render(<ServerConnections kind="daemon" onAgentsChange={vi.fn()} />))
+  expect(container.textContent).toContain('Old host')
+  expect(container.textContent).not.toContain('Box')
+  expect(button('Add')).toBeUndefined()
+  await act(async () => button('More Old host').click())
+  await act(async () => button('Copy uninstall command').click())
+  expect(api.copyText).toHaveBeenCalledWith('"$HOME/.douchat-host/bin/douchat-host" uninstall --purge')
 })
 
-it('opens on how to reach agents when there are no connections, per platform', async () => {
-  api.listConnections.mockResolvedValue([])
-  await render()
-  expect(container.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('Web app')
+it('in the desktop app, explains the web app and points servers to Discover', async () => {
+  await act(async () => root.render(<ConnectionsPanel />))
   expect(container.querySelector<HTMLAnchorElement>('a.connection-peer-link')?.href).toBe('http://app.localhost:5276/')
+  expect(container.textContent).toContain('Discover → Devices & Environments')
+  expect(container.querySelector('[role=tablist]')).toBeNull()
   expect(button('Add')).toBeUndefined()
 })
 
 it('on the web, shows only the desktop app while it is offline', async () => {
   api.listConnections.mockResolvedValue([])
   Object.assign(api, { platform: 'web', desktopAvailability: vi.fn(() => 'offline') })
-  await render()
+  await act(async () => root.render(<ConnectionsPanel />))
   expect(container.querySelector('[role=status]')?.textContent).toContain('The desktop app is offline')
   expect([...container.querySelectorAll<HTMLAnchorElement>('a.connection-peer-link')].map(link => link.textContent)).toEqual(['Open desktop app', 'Download desktop app'])
   expect(container.querySelector('[role=tablist]')).toBeNull()
@@ -131,7 +126,7 @@ it('on the web, shows only the desktop app while it is offline', async () => {
 it('on the web, offers only to open the desktop app while it is online', async () => {
   api.listConnections.mockResolvedValue([])
   Object.assign(api, { platform: 'web', desktopAvailability: vi.fn(() => 'online') })
-  await render()
+  await act(async () => root.render(<ConnectionsPanel />))
   const links = [...container.querySelectorAll<HTMLAnchorElement>('a.connection-peer-link')]
   expect(links.map(link => link.textContent)).toEqual(['Open desktop app'])
   expect(links[0].getAttribute('href')).toBe('douchat-dev://open')

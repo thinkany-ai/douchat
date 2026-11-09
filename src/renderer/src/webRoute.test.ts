@@ -39,4 +39,17 @@ describe('web app addresses', () => {
     expect(readRoute('/app/connectors')).toEqual({ view: 'discover', discoverPage: 'connectors' })
     expect(routePath({ view: 'discover' }, '')).toBe('/discover')
   })
+
+  it('addresses Devices & Environments, and keeps the older connections links working', () => {
+    expect(readRoute('/app/devices')).toEqual({ view: 'discover', discoverPage: 'devices' })
+    expect(readRoute('/devices')).toEqual({ view: 'discover', discoverPage: 'devices' })
+    expect(readRoute('/app/discover/devices')).toEqual({ view: 'discover', discoverPage: 'devices' })
+    expect(routePath({ view: 'discover', discoverPage: 'devices' }, '/app')).toBe('/app/devices')
+    // Servers moved from Settings → Connections; that tab still exists and explains the web and desktop apps.
+    expect(readRoute('/app/connections')).toEqual({ view: 'discover', discoverPage: 'devices' })
+    expect(readRoute('/connections')).toEqual({ view: 'discover', discoverPage: 'devices' })
+    expect(readRoute('/app/discover/connections')).toEqual({ view: 'discover', discoverPage: 'devices' })
+    expect(readRoute('/app/settings/connections')).toEqual({ view: 'chats', settingsTab: 'connections' })
+    expect(readRoute('/settings/connections')).toEqual({ view: 'chats', settingsTab: 'connections' })
+  })
 })

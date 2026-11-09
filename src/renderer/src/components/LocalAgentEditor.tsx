@@ -5,7 +5,7 @@ import { REMOTE_AGENT_ADAPTERS, type ConnectionView, type CustomLocalAgentInput,
 import { agentIcons } from '../agentIcons'
 import { readAvatarFile } from '../avatarFile'
 import { messageSendError } from '../messageQueue'
-import { t } from '../preferences'
+import { t, tr } from '../preferences'
 import { NativeDialog } from './NativeDialog'
 
 const ADAPTER_LABELS: Record<RemoteAgentAdapter, string> = {
@@ -54,23 +54,26 @@ export function LocalAgentEditor({ agent, connectionId: initialConnection, onSav
     if (typeof window.douchat.listConnections !== 'function') return
     void window.douchat.listConnections().then(list => {
       if (!mounted.current) return
-      setConnections(list)
+      // Agents on an agl device are added from the device's scan, not configured here.
+      setConnections(list.filter(item => item.kind !== 'agl'))
       if (!agent) setConnectionId(current => current || list.find(item => item.enabled)?.id || '')
     }).catch(() => { if (mounted.current) setConnections([]) })
   }, [])
   const remote = location === 'remote'
+  /** An agent on an agl device: agl runs it, so only its name and picture are edited here. */
+  const device = agent?.agl
   const canChooseLocation = !agent
   const argumentList = () => args.split(/\r?\n/).filter(arg => arg.length > 0)
   // Host, port, user and key belong to the connection; the agent only names it.
   const connection = connections?.find(item => item.id === connectionId)
-  const remoteAgent = (): RemoteAgentBinding => ({
+  const remoteAgent = (): RemoteAgentBinding => device && agent?.remoteAgent ? agent.remoteAgent : ({
     connectionId, adapter, executable: executable.trim() || DEFAULT_COMMANDS[adapter], args: argumentList()
   })
   const draft = (): CustomLocalAgentInput => remote
     ? { name, command: remoteAgent().executable, avatar, args: [], remoteAgent: remoteAgent() }
     : { name, command, avatar, args: argumentList() }
   const changed = () => { setResult(''); setError('') }
-  const ready = Boolean(name.trim()) && (remote ? Boolean(connection?.enabled && (executable.trim() || DEFAULT_COMMANDS[adapter])) : Boolean(command.trim()))
+  const ready = Boolean(name.trim()) && (device ? true : remote ? Boolean(connection?.enabled && (executable.trim() || DEFAULT_COMMANDS[adapter])) : Boolean(command.trim()))
   const test = async () => {
     setBusy('test'); setError(''); setResult(''); testing.current = true
     try {
@@ -118,13 +121,14 @@ export function LocalAgentEditor({ agent, connectionId: initialConnection, onSav
           <option value={LOCAL}>{t('This computer')}</option>
           {connections?.map(item => <option key={item.id} value={item.id} disabled={!item.enabled}>{item.name}{item.enabled ? '' : ` (${t('Turned off')})`}</option>)}
         </select></label>}
-        {canChooseLocation && connections && !connections.length && <p className="settings-note">{t('To run it on a server, add the server in Settings → Connections first.')}</p>}
+        {canChooseLocation && connections && !connections.length && <p className="settings-note">{t('To run it on a server, add the server in Discover → Devices & Environments first.')}</p>}
+        {device && <p className="settings-note">{tr('Runs on the device {device} through agl. Its agents are added and removed in Discover → Devices & Environments.', { device: device.label })}</p>}
         {!remote && <>
           <label>{t('Executable path')}<input required maxLength={2048} value={command} placeholder={agent?.path || '/path/to/agent'} spellCheck={false} onChange={event => { setCommand(event.target.value); changed() }} /></label>
           <label>{t('Startup arguments')}<textarea value={args} rows={4} spellCheck={false} placeholder={'--model\nmy-model'} onChange={event => { setArgs(event.target.value); changed() }} /></label>
           <p className="settings-note">{t(agent && !agent.custom ? 'One argument per line. Added to the built-in launch arguments.' : 'One argument per line. Use {prompt} for the message; otherwise it is appended as the last argument.')}</p>
         </>}
-        {remote && <>
+        {remote && !device && <>
           {!canChooseLocation && <label>{t('Connection')}<select value={connectionId} onChange={event => { setConnectionId(event.target.value); changed() }}>
             {!connection && <option value="">{t(connections && !connections.length ? 'No connections yet' : 'Choose a connection')}</option>}
             {connections?.map(item => <option key={item.id} value={item.id} disabled={!item.enabled}>{item.name}{item.enabled ? '' : ` (${t('Turned off')})`}</option>)}
@@ -147,9 +151,9 @@ export function LocalAgentEditor({ agent, connectionId: initialConnection, onSav
       </fieldset>
       {error && <p className="settings-error" role="alert">{t(error)}</p>}
       {result && <p className="local-agent-test-result" role="status">{result}</p>}
-      <p className="settings-note">{t('Testing sends a short request using this CLI’s account and may use its quota.')}</p>
+      {!device && <p className="settings-note">{t('Testing sends a short request using this CLI’s account and may use its quota.')}</p>}
       <footer>
-        <button type="button" className="secondary-button" disabled={Boolean(busy) || !ready} onClick={() => void test()}>{busy === 'test' && <RefreshCw size={15} className="spin" />}{t(busy === 'test' ? 'Testing…' : 'Test connection')}</button>
+        {device ? <span /> : <button type="button" className="secondary-button" disabled={Boolean(busy) || !ready} onClick={() => void test()}>{busy === 'test' && <RefreshCw size={15} className="spin" />}{t(busy === 'test' ? 'Testing…' : 'Test connection')}</button>}
         <span />
         <button type="button" className="secondary-button" onClick={onClose}>{t('Cancel')}</button>
         <button type="submit" className="primary-button" disabled={Boolean(busy) || !ready}>{t(busy === 'save' ? 'Saving…' : 'Save')}</button>

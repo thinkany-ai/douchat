@@ -26,12 +26,14 @@ const agentConnection = (agent: LocalAgent): string | undefined => agent.connect
 
 export type SettingsTab = 'memory' | 'profile' | 'general' | 'usage' | 'agents' | 'connections' | 'models' | 'scheduling' | 'about' | 'more'
 
-export function SettingsPanel({ user, agents, scanning, error, tab, creditsRefreshToken, creditsAttention = false, onCreditsAvailable, onTab, onClose, onSignOut, onUpdateProfile, onDetect, onLocalAgentsChange, onRemoveCustom }: {
+export function SettingsPanel({ user, agents, scanning, error, tab, initialAgentSource, creditsRefreshToken, creditsAttention = false, onCreditsAvailable, onTab, onClose, onSignOut, onUpdateProfile, onDetect, onLocalAgentsChange, onRemoveCustom }: {
   user: DesktopAuthUser
   agents: LocalAgent[]
   scanning: boolean
   error: string
   tab: SettingsTab
+  /** Opens Settings → Agents on this device or server connection (after adding agents from Discover). */
+  initialAgentSource?: string
   creditsRefreshToken: number
   creditsAttention?: boolean
   onCreditsAvailable?: () => void
@@ -76,7 +78,7 @@ export function SettingsPanel({ user, agents, scanning, error, tab, creditsRefre
   const [customError, setCustomError] = useState('')
   const [editingLocalAgent, setEditingLocalAgent] = useState<LocalAgent | 'new'>()
   // The list shows one place at a time: this computer by default, or one server connection.
-  const [agentSource, setAgentSource] = useState<string>(LOCAL_AGENTS)
+  const [agentSource, setAgentSource] = useState<string>(initialAgentSource ?? LOCAL_AGENTS)
   const [connectionNames, setConnectionNames] = useState<Record<string, string>>({})
   useEffect(() => {
     if (tab !== 'agents' || !window.douchat.listConnections) return
@@ -202,7 +204,7 @@ export function SettingsPanel({ user, agents, scanning, error, tab, creditsRefre
         {unavailable.length > 0 && <section aria-label={t('Unavailable server agents')}><h2>{t('Server unavailable')} <span>{unavailable.length}</span></h2>{unavailable.map(row)}</section>}
         {desktopOnly.length > 0 && <section aria-label={t('Desktop apps needing a CLI')}><h2>{t('Desktop app only')} <span>{desktopOnly.length}</span></h2>{desktopOnly.map(row)}</section>}
         {missing.length > 0 && <section aria-label={t('Other supported agents')}><h2>{t('Not detected')} <span>{missing.length}</span></h2>{missing.map(row)}</section>}
-      </> : tab === 'connections' ? <ConnectionsPanel key={user.id} agents={agents} onAgentsChange={list => { if (onLocalAgentsChange) onLocalAgentsChange(list); else onDetect() }} onShowAgents={(id) => { setAgentSource(id); onTab('agents') }} />
+      </> : tab === 'connections' ? <ConnectionsPanel key={user.id} />
       : tab === 'models' ? <CustomModelSettings /> : tab === 'scheduling' ? <SchedulingSettings /> : tab === 'more' ? <MoreFromUsTab /> : <AboutTab />}
     </main>
     </section>
