@@ -78,3 +78,6 @@ temp/
 patches/connany-*/
 
 host/dist/
+
+# agl sidecar binaries fetched at packaging time (scripts/fetch-agl.mjs)
+resources/bin/

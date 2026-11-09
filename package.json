@@ -23,11 +23,12 @@
     "build": "electron-vite build",
     "build:web": "vite build --config vite.web.config.ts",
     "publish:web": "node scripts/publish-web.mjs",
-    "package": "npm run build && electron-builder --dir --publish never",
-    "package:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --x64 --arm64 --publish never -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.notarize=false",
+    "fetch:agl": "node scripts/fetch-agl.mjs",
+    "package": "npm run build && node scripts/fetch-agl.mjs && electron-builder --dir --publish never",
+    "package:mac": "npm run build && node scripts/fetch-agl.mjs --platform mac && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --x64 --arm64 --publish never -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.notarize=false",
     "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
-    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
-    "release:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "package:linux": "npm run build && node scripts/fetch-agl.mjs --targets linux-x64 && electron-builder --linux AppImage deb --x64 --publish never",
+    "release:mac": "npm run build && node scripts/fetch-agl.mjs --platform mac --release && electron-builder --mac dmg zip --x64 --arm64 --publish never",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p host/tsconfig.json",
     "build:host": "node scripts/build-host.mjs",
@@ -53,6 +54,9 @@
     "tar-stream": "3.1.7",
     "yaml": "2.9.1",
     "yauzl": "3.4.0"
+  },
+  "agl": {
+    "version": "0.3.12"
   },
   "devDependencies": {
     "@streamdown/cjk": "^1.0.3",
@@ -128,6 +132,12 @@
         "NSDesktopFolderUsageDescription": "Douchat accesses Desktop only when you ask an agent to find or open a local file. / Douchat 仅在你要求智能体查找或打开本地文件时访问桌面文件夹。",
         "NSDocumentsFolderUsageDescription": "Douchat accesses Documents only when you ask an agent to find or open a local file. / Douchat 仅在你要求智能体查找或打开本地文件时访问文稿文件夹。"
       },
+      "extraResources": [
+        {
+          "from": "resources/bin/darwin-${arch}/agl",
+          "to": "bin/agl"
+        }
+      ],
       "hardenedRuntime": true,
       "entitlements": "resources/entitlements.mac.plist",
       "entitlementsInherit": "resources/entitlements.mac.plist",
@@ -180,6 +190,12 @@
       "category": "Utility",
       "maintainer": "ThinkAny, LLC <support@thinkany.ai>",
       "syncDesktopName": true,
+      "extraResources": [
+        {
+          "from": "resources/bin/linux-${arch}/agl",
+          "to": "bin/agl"
+        }
+      ],
       "desktop": {
         "entry": {
           "MimeType": "x-scheme-handler/douchat;"
