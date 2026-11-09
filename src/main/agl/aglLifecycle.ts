@@ -203,7 +203,11 @@ export class AglLifecycle {
       this.error = message(error)
       if (this.state === 'starting') this.state = 'error'
       this.log('agl.error', this.error)
-    }).then(() => this.view()).finally(() => { this.refreshing = undefined; this.emit() })
+    }).then(() => {
+      this.refreshing = undefined
+      this.emit()
+      return this.view()
+    })
     this.emit()
     return this.refreshing
   }
@@ -377,8 +381,9 @@ export class AglLifecycle {
       this.updating = undefined
       // An update replaced the binary and restarted the daemon: read everything again.
       if (this.update.appliedAt && this.update.appliedVersion !== this.binaryVersion) await this.refresh()
+      this.emit()
       return this.view()
-    }).finally(() => { this.updating = undefined; this.emit() })
+    })
     return this.updating
   }
 
