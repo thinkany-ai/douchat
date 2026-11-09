@@ -13,6 +13,8 @@ import { normalizeRemoteSpec, remoteHostLabel } from './remoteValidate'
 import { ConnectionStore, connectionSpec, connectionTargetId, legacyTargetId } from './connectionStore'
 import { connectionLabel } from './connectionManager'
 import { forgetRemoteProbes, probeRemoteAgent } from './remoteTransport'
+import type { AgentInfo } from './agl/aglClient'
+import { AGL_DETECTED_AGENTS, localAgentFromAgl } from './agl/aglAgents'
 
 const execFileAsync = promisify(execFile)
 let customRegistryPath: string | undefined
@@ -367,10 +369,22 @@ export async function executableVersion(path: string): Promise<string | undefine
   }
 }
 
+/** agl's `agents.list`, or undefined when agl cannot answer (then the desktop probes as usual). */
+export type AglDetection = () => Promise<AgentInfo[] | undefined>
+let aglDetection: AglDetection | undefined
+/**
+ * Experimental "Use agl for local agents": while set, catalog agents agl
+ * supports are detected through agl instead of this computer's PATH and
+ * `--version`. Running them is unchanged.
+ */
+export function configureAglDetection(source: AglDetection | undefined): void { aglDetection = source }
+
 interface DetectionDependencies {
   executable?: (command: string) => Promise<string | undefined>
   desktopApp?: (names: readonly string[]) => Promise<string | undefined>
   version?: (path: string) => Promise<string | undefined>
+  /** Overrides the configured agl detection; null turns it off. */
+  agl?: AglDetection | null
 }
 
 async function detectionDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
@@ -396,6 +410,8 @@ async function detectLocalAgentsInternal(dependencies: DetectionDependencies = {
     ...localAgentCatalog.map(([id, name, command, appNames]) => [id, name, command, appNames, false] as const),
     ...custom.filter(item => CUSTOM_ID.test(item.id)).map(({ id, name, command }) => [id, name, command, [], true] as const)
   ]
+  const aglSource = dependencies.agl === undefined ? aglDetection : dependencies.agl ?? undefined
+  const aglAgents = aglSource ? await aglSource().catch(() => undefined) : undefined
   const hidden = new Set(custom.filter(item => item.remoteAgent && otherAccountHost(connections.find(entry => entry.id === item.remoteAgent!.connectionId))).map(item => item.id))
   return Promise.all(definitions.filter(([id]) => (!onlyId || id === onlyId) && !hidden.has(id)).map(async ([id, name, command, appNames, isCustom]) => {
     const override = custom.find(item => item.id === id)
@@ -418,8 +434,12 @@ async function detectLocalAgentsInternal(dependencies: DetectionDependencies = {
         chatSupported: true, status: 'not-found', authentication: 'unchecked', custom: true, connectionId: override.remoteAgent.connectionId, connectionName,
         remoteAgent: override.remoteAgent, unavailable: placement?.unavailable ?? 'missing', ...(daemon ? { daemon: { connectionId: daemon.connectionId, hostId: daemon.hostId, label: daemon.label } } : {}) }
     }
+    const catalogCommand = command
     name = override?.name ?? name
     command = override?.command ?? command
+    // agl detects the catalog agents it supports, unless the user pointed one at another command.
+    const fromAgl = !isCustom && command === catalogCommand && (AGL_DETECTED_AGENTS as readonly string[]).includes(id) ? aglAgents?.find(item => item.id === id) : undefined
+    if (fromAgl) return localAgentFromAgl({ id, name, command, args: override?.args, avatar: override?.avatar }, fromAgl)
     const [path, desktopPath] = await Promise.all([resolveCommand(command), resolveApp(appNames)])
     const version = path ? await detectionDeadline(readVersion(path), 8000).catch(() => undefined) : undefined
     const status = path ? 'ready' : desktopPath ? 'desktop-only' : 'not-found'

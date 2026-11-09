@@ -47,6 +47,12 @@ export function cancelLocalModelQueries(): void {
   modelCancellations.clear()
   modelRequests.clear()
 }
+/** agl's model list for an agent, or undefined to discover it the desktop's way. */
+export type AglModels = (agentId: string) => Promise<LocalModel[] | undefined>
+let aglModels: AglModels | undefined
+/** Experimental "Use agl for local agents": model lists of agents agl supports come from `agents.models`. */
+export function configureAglModels(source: AglModels | undefined): void { aglModels = source }
+
 export function listLocalAgentModels(id: string): Promise<LocalModelList> {
   const existing = modelRequests.get(id)
   if (existing) return existing
@@ -70,6 +76,12 @@ async function discoverLocalAgentModels(id: string, signal: AbortSignal): Promis
   if (agent.agl) return { models: [], source: 'manual', configurable: false }
   if (agent.remote) return discoverRemoteModels(agent, agent.remote, signal)
   if (!configurableLocalAgents.includes(id)) return { models: [], source: 'manual', configurable: false }
+  // Catalog agents only: custom commands and arguments are the desktop's to probe.
+  if (aglModels && !agent.custom && !agent.args?.length) {
+    const models = await aglModels(id).catch(() => undefined)
+    signal.throwIfAborted()
+    if (models?.length) return { models, source: 'agent', configurable: true }
+  }
   // These CLIs accept a model override but don't expose a stable non-interactive catalog.
   if (!['codex', 'claude', 'opencode', 'cursor', 'grok', 'openclaw', 'omp'].includes(id)) return { models: [], source: 'manual', configurable: true }
   const env = await spawnEnvironment()

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { addCustomLocalAgent, configureLocalAgentRegistry, connectionRegistry, detectLocalAgents, findDesktopApp, remoteAgentPlacement, removeCustomLocalAgent, setConnectionAccount, updateLocalAgent, validateLocalAgent, hasRemoteAgent } from './localAgents'
+import { addCustomLocalAgent, configureAglDetection, configureLocalAgentRegistry, connectionRegistry, detectLocalAgents, findDesktopApp, remoteAgentPlacement, removeCustomLocalAgent, setConnectionAccount, updateLocalAgent, validateLocalAgent, hasRemoteAgent } from './localAgents'
 import { resolveExecutable } from './shellPath'
 vi.mock('./shellPath', () => ({ resolveExecutable: vi.fn() }))
 let registryDirectory = ''
@@ -173,5 +173,35 @@ describe('agents on connections', () => {
   it('still rejects arguments that disable the sandbox', async () => {
     const connection = await connections().save({ name: 'Box', ssh: { host: 'box' } })
     await expect(addCustomLocalAgent({ name: 'Remote', command: 'codex', remoteAgent: { ...binding(connection.id), args: ['--yolo'] } })).rejects.toThrow(/safety boundary/)
+  })
+})
+
+describe('detection through agl (experimental setting)', () => {
+  const agl = async () => [
+    { id: 'codex', name: 'Codex', protocol: 'codex', available: true, path: '/agl/found/codex', version: 'codex-cli 9.9.9', features: [], status: 'ready' as const },
+    { id: 'claude', name: 'Claude Code', protocol: 'claude', available: false, features: [], status: 'not-found' as const },
+    { id: 'fastclaw', name: 'FastClaw', protocol: 'acp', available: true, path: '/agl/fastclaw', features: [] }
+  ]
+  const probes = { executable: async (command: string) => `/desktop/bin/${command}`, desktopApp: async () => undefined, version: async () => 'desktop probe' }
+
+  it('takes agents agl supports from agl, and the rest from the desktop’s probes', async () => {
+    const agents = await detectLocalAgents({ ...probes, agl })
+    expect(agents.find(agent => agent.id === 'codex')).toMatchObject({ installed: true, path: '/agl/found/codex', version: 'codex-cli 9.9.9' })
+    // agl's answer stands, even where the desktop would have found something.
+    expect(agents.find(agent => agent.id === 'claude')).toMatchObject({ installed: false, status: 'not-found' })
+    // Not in agl's list, or not one agl runs: the desktop's probes as before.
+    expect(agents.find(agent => agent.id === 'gemini')).toMatchObject({ installed: true, path: '/desktop/bin/gemini', version: 'desktop probe' })
+    expect(agents.find(agent => agent.id === 'fastclaw')).toMatchObject({ path: '/desktop/bin/fastclaw' })
+  })
+
+  it('is off unless configured, and falls back when agl cannot answer', async () => {
+    expect((await detectLocalAgents(probes)).find(agent => agent.id === 'codex')?.path).toBe('/desktop/bin/codex')
+    configureAglDetection(agl)
+    try {
+      expect((await detectLocalAgents(probes)).find(agent => agent.id === 'codex')?.path).toBe('/agl/found/codex')
+      expect((await detectLocalAgents({ ...probes, agl: null })).find(agent => agent.id === 'codex')?.path).toBe('/desktop/bin/codex')
+    } finally { configureAglDetection(undefined) }
+    expect((await detectLocalAgents({ ...probes, agl: async () => undefined })).find(agent => agent.id === 'codex')?.path).toBe('/desktop/bin/codex')
+    expect((await detectLocalAgents({ ...probes, agl: async () => { throw new Error('down') } })).find(agent => agent.id === 'codex')?.path).toBe('/desktop/bin/codex')
   })
 })
