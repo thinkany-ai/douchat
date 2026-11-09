@@ -17,7 +17,7 @@ import { thinkingLevel } from '../shared/thinkingLevels'
 import { authorizeTokenDance } from './tokenDanceAuth'
 import { CustomModelStore } from './customModels'
 import { CUSTOM_PROVIDER_PREFIX, type CustomProviderInput, type CustomModelTest } from '../shared/customModels'
-import { configureManagedNode, ensureManagedNode } from './managedNode'
+import { configureManagedNode, ensureManagedNode, managedSearchPaths } from './managedNode'
 import { configureNativeDialogWindows, resizeNativeDialog } from './nativeDialogs'
 import { mkdirSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -69,7 +69,7 @@ import { migrateWorkspaceTargets } from './workspaceMigration'
 import { migrateSharingToPermissions } from './sharingMigration'
 import { closeRemoteConnections, configureRemoteTransport } from './remoteTransport'
 import { checkLocalAgentUpdates } from './localAgentUpdates'
-import { resetShellPath } from './shellPath'
+import { resetShellPath, spawnEnvironment } from './shellPath'
 import { DesktopAuth } from './desktopAuth'
 import { DeviceIdentity } from './deviceIdentity'
 import { DaemonClient } from './remote/daemonClient'
@@ -87,6 +87,11 @@ import { socialRequest } from './remote/socialRequest'
 import { AglHub } from './agl/aglHub'
 import { AglExecutor, routingExecutor } from './agl/aglExecutor'
 import { AglDevices, aglAdapter, aglTargetOf, validMachineId } from './agl/aglDevices'
+import { AglLifecycle } from './agl/aglLifecycle'
+import { AglSettingsStore } from './agl/aglSettingsStore'
+import { ThisComputerLinker } from './agl/aglThisComputer'
+import { bundledAglPath, connectAgl, fileExists, installAglBinary, resolveAglHome, runAgl, serviceStartCommand } from './agl/aglLocal'
+import { douchatHubLink } from './agl/aglStatus'
 import { desktopAgentExecutor } from './desktopAgentExecutor'
 import { canAssignAgentWorkspace, canAssignConversationWorkspace, memberWorkspace, ownMemberAgentIds } from '../shared/conversationWorkspace'
 import { prepareNpmMaintenance, resolveMaintenancePlan } from './localAgentMaintenance'
@@ -242,11 +247,41 @@ let scheduler: RoutineScheduler
 let auth: DesktopAuth
 // agl devices (Discover → Devices & Environments): reached through the Douchat service with the desktop token.
 const aglHub = new AglHub((body, signal) => socialRequest(webAppUrl, auth, body, signal))
-const aglDevices = new AglDevices(aglHub, connections, () => {
+// The shared agl daemon on this computer (macOS and Linux): installed, started, kept up to date
+// and linked to the account in the background. See agl/aglLifecycle.ts.
+const aglSettingsStore = new AglSettingsStore(join(app.getPath('userData'), 'agl-settings.json'))
+const aglHome = resolveAglHome({ env: process.env.DOUCHAT_AGL_HOME, setting: aglSettingsStore.home, development, platform: process.platform })
+const aglHubUrls = new Set([`${new URL(webAppUrl).origin}/agl`])
+const aglLifecycle = new AglLifecycle({
+  platform: process.platform, enabled: aglHome.enabled, home: aglHome.home, defaultHome: aglHome.defaultHome,
+  bundledBin: bundledAglPath({ env: process.env.DOUCHAT_AGL_BIN, packaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath(), platform: process.platform, arch: process.arch }),
+  run: runAgl, fileExists, installBinary: (from, to) => installAglBinary(from, to), environment: spawnEnvironment, connect: connectAgl,
+  // Douchat's managed npm prefix and Node runtime, where it installs agent CLIs.
+  extraPaths: managedSearchPaths, ownedRoot: join(app.getPath('userData'), 'local-tools'),
+  serviceStartCommand: () => serviceStartCommand(), log: (event, detail) => diagnostics.write(event, detail ?? '')
+})
+aglLifecycle.setHubUrls([...aglHubUrls])
+const signedInAccount = (): string | undefined => {
   const state = auth?.getState()
   return state?.status === 'signed-in' ? state.user.id : undefined
-}, new URL(webAppUrl).origin, agentsOnConnection)
+}
+const aglDevices = new AglDevices(aglHub, connections, signedInAccount, new URL(webAppUrl).origin, agentsOnConnection, () => aglLifecycle.view().machineId)
 connections.setAglBackend(aglDevices)
+const thisComputer = new ThisComputerLinker({
+  lifecycle: aglLifecycle,
+  createPairing: async () => {
+    const pairing = await aglHub.createPairing()
+    if (pairing?.hubUrl) { aglHubUrls.add(pairing.hubUrl); aglLifecycle.setHubUrls([...aglHubUrls]) }
+    return pairing
+  },
+  settings: () => aglSettingsStore.get(), account: signedInAccount,
+  linked: () => notifyWindows(BrowserWindow.getAllWindows(), 'douchat:connections-changed'),
+  log: (event, detail) => diagnostics.write(event, detail ?? '')
+})
+aglLifecycle.onStatus((view) => {
+  notifyWindows(BrowserWindow.getAllWindows(), 'douchat:agl-status', view)
+  if (view.state === 'running' && !view.busy) void thisComputer.maybeLink()
+})
 /** Agents on an agl device run through agl; every other agent through the desktop executor, unchanged. */
 const agentExecutor = routingExecutor(desktopAgentExecutor, new AglExecutor({ hub: aglHub, resolve: aglTargetOf }))
 let updater: DesktopUpdater
@@ -412,7 +447,7 @@ function broadcastAuth(state: DesktopAuthState): void {
     // Hosts belong to the account that added them; SSH connections stay with this computer.
     setConnectionAccount(nextSocialAccount)
     void connections.setAccount(nextSocialAccount).then(() => notifyWindows(BrowserWindow.getAllWindows(), 'douchat:connections-changed'))
-    if (nextSocialAccount) { social?.start(); daemon?.start(); cloudSync?.start() }
+    if (nextSocialAccount) { social?.start(); daemon?.start(); cloudSync?.start(); aglLifecycle.start(); void thisComputer.maybeLink() }
     else { social?.stop(); daemon?.stop(); cloudSync?.stop() }
   }
   let welcomeConversationId: string | undefined
@@ -1045,8 +1080,33 @@ app.whenReady().then(async () => {
       await removeAgentsOnConnection(connection, mode, inUse)
       await connections.remove(connection)
     } else await aglDevices.revokeMachine(id)
+    if (id === aglLifecycle.view().machineId) {
+      // Removing this computer is a choice: stop linking it again, and drop agl's now revoked link.
+      await aglSettingsStore.save({ autoLink: false })
+      const link = douchatHubLink(aglLifecycle.lastStatus() ?? { hubs: [] }, [...aglHubUrls])
+      if (link) await aglLifecycle.disconnectHub(link.url).catch(error => diagnostics.write('agl.disconnect-failed', String(error)))
+    }
     connectionChanged(); scheduleBroadcast()
     return aglDevices.list()
+  })
+  // ─── agl on this computer (Settings → Agents) ─────────────────────────────
+  const aglRequest = (event: Electron.IpcMainInvokeEvent): void => {
+    // Desktop windows only: the web app has no business with this computer's agl.
+    if (event.sender === REMOTE_SENDER || !isDouchatRenderer(event.sender)) throw new Error('Invalid agl request')
+  }
+  ipcMain.handle('douchat:agl-status', (event) => { aglRequest(event); return aglLifecycle.view() })
+  ipcMain.handle('douchat:check-agl-updates', async (event) => {
+    aglRequest(event)
+    await aglLifecycle.refresh()
+    return aglLifecycle.checkForUpdates(true)
+  })
+  ipcMain.handle('douchat:agl-settings', (event) => { aglRequest(event); return aglSettingsStore.get() })
+  ipcMain.handle('douchat:save-agl-settings', async (event, input: unknown) => {
+    aglRequest(event)
+    const before = aglSettingsStore.get()
+    const next = await aglSettingsStore.save(input)
+    if (next.autoLink && !before.autoLink) void thisComputer.maybeLink()
+    return next
   })
   ipcMain.handle('douchat:discover-agl-agents', (event, machineId: unknown) => { connectionRequest(event); return aglDevices.agents(validMachineId(machineId), AbortSignal.timeout(60_000)) })
   ipcMain.handle('douchat:add-agl-agents', async (event, machineId: unknown, chosen: unknown) => {
@@ -1698,6 +1758,8 @@ app.whenReady().then(async () => {
   app.on('browser-window-focus', () => connections.retryFailed())
   startupReady = true
   createWindow()
+  // agl never delays startup: it is checked in the background once the window is up.
+  setTimeout(() => aglLifecycle.start(), 3_000).unref()
   void auth.initialize().then(() => {
     if (!pendingAuthUrl) return
     const url = pendingAuthUrl
@@ -1731,6 +1793,8 @@ app.on('before-quit', () => {
   scheduler?.dispose()
   computer?.dispose()
   connections.stop()
+  // The shared agl daemon keeps running (the service, other apps and the hub use it).
+  aglLifecycle.dispose()
   void closeRemoteConnections()
 })
 

@@ -91,6 +91,15 @@ const api: DouchatApi = {
   removeAglDevice: (machineId, mode) => ipcRenderer.invoke('douchat:remove-agl-device', machineId, mode),
   discoverAglAgents: (machineId) => ipcRenderer.invoke('douchat:discover-agl-agents', machineId),
   addAglAgents: (machineId, agents) => ipcRenderer.invoke('douchat:add-agl-agents', machineId, agents),
+  getAglStatus: () => ipcRenderer.invoke('douchat:agl-status'),
+  checkAglUpdates: () => ipcRenderer.invoke('douchat:check-agl-updates'),
+  getAglSettings: () => ipcRenderer.invoke('douchat:agl-settings'),
+  saveAglSettings: (settings) => ipcRenderer.invoke('douchat:save-agl-settings', settings),
+  onAglStatus: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: import('../shared/agl').AglStatusView): void => listener(status)
+    ipcRenderer.on('douchat:agl-status', handler)
+    return () => ipcRenderer.removeListener('douchat:agl-status', handler)
+  },
   removeCustomLocalAgent: (id: string) => ipcRenderer.invoke('douchat:remove-custom-local-agent', id),
   searchMessages: (conversationId, query) => ipcRenderer.invoke('douchat:search-messages', conversationId, query),
   getMessagePage: (conversationId, topicId, before) => ipcRenderer.invoke('douchat:message-page', conversationId, topicId, before),
