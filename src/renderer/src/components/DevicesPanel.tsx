@@ -131,12 +131,13 @@ function DevicesTabPanel({ web, agents, onAgentsChange, onShowAgents }: { web: b
         onClick={() => void run(async () => { await window.douchat.setConnectionEnabled(device.connectionId!, device.enabled === false); return window.douchat.listAglDevices() })} />}
       <span className="local-agent-icon installed"><Laptop size={20} /></span>
       <div className="local-agent-copy">
-        <strong>{deviceName(device)}</strong>
+        <strong>{deviceName(device)}{device.thisComputer && <span className="local-agent-remote-badge this-computer-badge">{t('This computer')}</span>}</strong>
         <span className={`connection-status connection-status-${device.connectionId && device.enabled === false ? 'disabled' : device.online ? 'connected' : 'disabled'}`} role="status"><i aria-hidden="true" />{status(device)}{device.agentIds.length ? ` · ${device.agentIds.length} ${t(device.agentIds.length === 1 ? 'agent' : 'agents')}` : ''}</span>
         {deviceDetails(device) && <code title={device.machineId}>{deviceDetails(device)}</code>}
       </div>
       {!web && <div className="local-agent-row-aside">
-        <button type="button" className="secondary-button" disabled={!device.online || device.enabled === false} title={t('Scan for agents on this device')} aria-label={`${t('Scan for agents on this device')} ${deviceName(device)}`} onClick={() => setScanning(device)}><ScanSearch size={15} /></button>
+        {/* This computer's agents run here directly; they are in Settings → Agents. */}
+        {!device.thisComputer && <button type="button" className="secondary-button" disabled={!device.online || device.enabled === false} title={t('Scan for agents on this device')} aria-label={`${t('Scan for agents on this device')} ${deviceName(device)}`} onClick={() => setScanning(device)}><ScanSearch size={15} /></button>}
         <div className="connection-menu">
           <button type="button" className="icon-button" aria-label={`${t('More')} ${deviceName(device)}`} aria-expanded={menu === device.machineId} onClick={() => setMenu(menu === device.machineId ? undefined : device.machineId)}><MoreHorizontal size={16} /></button>
           {menu === device.machineId && <div className="connection-menu-items" role="menu">
@@ -231,7 +232,8 @@ export function AddDeviceDialog({ agents, onClose, onAdded }: { agents: LocalAge
       const poll = async (): Promise<void> => {
         if (!active) return
         try {
-          const found = (await window.douchat.listAglDevices()).find(item => item.online && (!known.has(item.machineId) || item.pairedAt > known.get(item.machineId)!))
+          // This computer may link itself meanwhile (Settings → Agents → agl); it is not the device being added.
+          const found = (await window.douchat.listAglDevices()).find(item => item.online && !item.thisComputer && (!known.has(item.machineId) || item.pairedAt > known.get(item.machineId)!))
           if (!active) return
           if (found) { setDevice(found); setName(deviceName(found)); setStep('name'); return }
         } catch { /* Polled again shortly. */ }
