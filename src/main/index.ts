@@ -23,7 +23,7 @@ import { mkdirSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { BUILT_IN_PRODUCTS, parseProducts } from '../shared/products'
 import { DiagnosticLog } from './diagnostics'
-import { hostname, release as osRelease } from 'node:os'
+import { homedir, hostname, release as osRelease } from 'node:os'
 import { SnapshotPublisher } from './snapshotPublisher'
 import { notifyWindows } from './windowNotifications'
 import { SocialClient } from './social'
@@ -90,7 +90,9 @@ import { AglDevices, aglAdapter, aglTargetOf, validMachineId } from './agl/aglDe
 import { AglLifecycle } from './agl/aglLifecycle'
 import { AglSettingsStore } from './agl/aglSettingsStore'
 import { ThisComputerLinker } from './agl/aglThisComputer'
-import { bundledAglPath, connectAgl, fileExists, installAglBinary, resolveAglHome, runAgl, serviceStartCommand } from './agl/aglLocal'
+import { aglLocalFiles, bundledAglPath, connectAgl, fileExists, installAglBinary, resolveAglHome, runAgl, serviceStartCommand } from './agl/aglLocal'
+import { AglLocalExecutor, aglLocalRouting, readCodexGeneratedImage, type AglLocalClient } from './agl/aglLocalExecutor'
+import { codexComputerUseInstructions } from './codexComputerUse'
 import { douchatHubLink } from './agl/aglStatus'
 import { AglAgentCatalog } from './agl/aglAgents'
 import { desktopAgentExecutor } from './desktopAgentExecutor'
@@ -292,13 +294,32 @@ function useAglForLocalAgents(on: boolean): void {
   aglAgents.invalidate()
 }
 useAglForLocalAgents(aglSettingsStore.get().useForLocalAgents)
-aglLifecycle.onRestart(() => aglAgents.invalidate())
+aglLifecycle.onRestart(() => { aglAgents.invalidate(); aglLocalExecutor.forgetAll() })
 aglLifecycle.onStatus((view) => {
   notifyWindows(BrowserWindow.getAllWindows(), 'douchat:agl-status', view)
   if (view.state === 'running' && !view.busy) void thisComputer.maybeLink()
 })
-/** Agents on an agl device run through agl; every other agent through the desktop executor, unchanged. */
-const agentExecutor = routingExecutor(desktopAgentExecutor, new AglExecutor({ hub: aglHub, resolve: aglTargetOf }))
+// Experimental, with "Use agl for local agents": Codex runs through the agl daemon on this computer.
+const aglLocalExecutor = new AglLocalExecutor({
+  platform: process.platform,
+  enabled: () => { const settings = aglSettingsStore.get(); return settings.enabled === true && settings.useForLocalAgents },
+  // connectAgl made it: the vendored AglClient, which also subscribes and delivers events.
+  client: () => aglLifecycle.client() as AglLocalClient | undefined,
+  agents: () => aglAgents.agents(),
+  localAgent: id => validateLocalAgent(id),
+  workspace: (config, sessionKey, directory) => localWorkspace(config, sessionKey, directory),
+  ...aglLocalFiles,
+  generatedImageFile: async path => readCodexGeneratedImage(path, (await spawnEnvironment()).CODEX_HOME || join(homedir(), '.codex')),
+  computerUseInstructions: codexComputerUseInstructions,
+  log: (event, detail) => diagnostics.write(event, detail ?? '')
+})
+/** Agents on an agl device run through agl; with the experimental setting, local Codex through the agl daemon here; every other agent through the desktop executor, unchanged. */
+const agentExecutor = routingExecutor(aglLocalRouting(desktopAgentExecutor, aglLocalExecutor, (event, detail) => diagnostics.write(event, detail ?? '')), new AglExecutor({ hub: aglHub, resolve: aglTargetOf }))
+/** Codex turns switch between the desktop runtime and agl: neither may keep the other's Codex thread open. */
+function switchLocalCodexRuntime(): void {
+  aglLocalExecutor.stopAll('The way Codex runs on this computer changed. Send your message again.')
+  for (const agent of store?.accountAgents ?? []) if (agent.localAgentId === 'codex') desktopAgentExecutor.disposeAgent(agent.id)
+}
 let updater: DesktopUpdater
 let connany: ConnanyManager
 let connanyEvents: ReturnType<typeof setInterval> | undefined
@@ -1133,6 +1154,7 @@ app.whenReady().then(async () => {
       aglLifecycle.consentChanged()
       aglAgents.invalidate()
     }
+    if ((next.enabled === true && next.useForLocalAgents) !== (before.enabled === true && before.useForLocalAgents)) switchLocalCodexRuntime()
     if (next.autoLink && !before.autoLink) void thisComputer.maybeLink()
     if (next.useForLocalAgents !== before.useForLocalAgents) useAglForLocalAgents(next.useForLocalAgents)
     return next
