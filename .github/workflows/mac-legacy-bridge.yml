@@ -1,0 +1,87 @@
+name: Build legacy Mac update bridge
+
+# Keep the original feed on this old-team-signed bridge. It embeds the new
+# ThinkAny feed URL, so even users who skip releases can migrate in two steps.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Import original signing certificate
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          test "$APPLE_TEAM_ID" = JU9K7W6T6W
+          certificate_path="$RUNNER_TEMP/bridge.p12"
+          keychain_path="$RUNNER_TEMP/bridge.keychain-db"
+          keychain_password=$(openssl rand -hex 32)
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          rm "$certificate_path"
+      - name: Build original-team bridge and notarize
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          CSC_NAME: MinHua Tang (JU9K7W6T6W)
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          npm run build
+          npx electron-builder --mac zip --"$ARCH" --publish never \
+            -c.mac.sign=scripts/sign-mac-bridge.mjs \
+            -c.directories.output=release/bridge
+      - name: Verify migration trust and Gatekeeper
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          app=release/bridge/mac/Douchat.app
+          if [ "$ARCH" = arm64 ]; then app=release/bridge/mac-arm64/Douchat.app; fi
+          codesign --verify --deep --strict "$app"
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -F 'TeamIdentifier=JU9K7W6T6W'
+          codesign --verify --deep --strict \
+            -R '=identifier "ai.thinkany.douchat" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "JU9K7W6T6W"' "$app"
+          codesign -dr- "$app" 2>&1 | tee release/bridge/designated-requirement.txt
+          grep -F 8PL52G56V9 release/bridge/designated-requirement.txt
+          grep -F 'https://cdn.douchat.ai/thinkany' "$app/Contents/Resources/app-update.yml"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: legacy-bridge-${{ matrix.arch }}
+          path: |
+            release/bridge/*.zip
+            release/bridge/*.zip.blockmap
+            release/bridge/latest-mac.yml
+            release/bridge/designated-requirement.txt
+          if-no-files-found: error
+      - name: Remove signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/bridge.keychain-db" || true
