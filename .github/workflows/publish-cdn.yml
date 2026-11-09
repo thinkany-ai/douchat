@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: douchat-cdn-publication
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -38,6 +42,16 @@ jobs:
       - name: Verify AWS CLI
         run: aws --version
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Test download catalog generation
+        run: node --test scripts/generate-download-catalog.test.mjs scripts/publish-release.test.mjs
+
       - name: Upload artifacts and publish update feed
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -56,17 +70,18 @@ jobs:
           version="${RELEASE_TAG#v}"
           for manifest in latest-mac.yml latest.yml latest-linux.yml; do
             if [ ! -f "dist/$manifest" ]; then
-              echo "Required update manifest is missing: $manifest" >&2
-              exit 1
+              continue
             fi
+            prefix=""
+            if [ "$manifest" = latest-mac.yml ]; then prefix="thinkany/"; fi
             curl --fail --silent --show-error \
               --retry 8 --retry-all-errors --retry-delay 5 \
-              "https://cdn.douchat.ai/$manifest" | grep -F "version: $version"
+              "https://cdn.douchat.ai/$prefix$manifest" | grep -F "version: $version"
+            while IFS= read -r artifact; do
+              curl --fail --silent --show-error --head \
+                --retry 8 --retry-all-errors --retry-delay 5 \
+                "https://cdn.douchat.ai/$prefix$artifact" >/dev/null
+            done < <(sed -nE 's/^[[:space:]]*- url: (.+)$/\1/p' "dist/$manifest")
           done
-
-          while IFS= read -r artifact; do
-            curl --fail --silent --show-error --head \
-              --retry 8 --retry-all-errors --retry-delay 5 \
-              "https://cdn.douchat.ai/$artifact" >/dev/null
-          done < <(sed -nE 's/^[[:space:]]*- url: (.+)$/\1/p' \
-            dist/latest-mac.yml dist/latest.yml dist/latest-linux.yml | sort -u)
+          curl --fail --silent --show-error https://cdn.douchat.ai/latest.json | \
+            node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s);if(c.schemaVersion!==1||!c.platforms.mac||!c.platforms.windows||!c.platforms.linux)process.exit(1)})'
