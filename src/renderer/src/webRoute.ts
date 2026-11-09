@@ -8,7 +8,7 @@ import type { SettingsTab } from './components/SettingsPanel'
  *
  *   /chat              chat list          /contacts            contacts
  *   /chat/<code>       one conversation   /settings/<tab>      settings
- *   /discover          Discover list      /<page>              a Discover page (/automation, /connectors)
+ *   /discover          Discover list      /<page>              a Discover page (/automation, /connectors, /devices)
  *
  * A conversation appears by a short code derived from its id rather than the
  * id itself: ids are long compound keys that other records reference, and
@@ -18,7 +18,9 @@ import type { SettingsTab } from './components/SettingsPanel'
  */
 
 const SETTINGS_TABS: readonly SettingsTab[] = ['memory', 'profile', 'general', 'usage', 'agents', 'connections', 'models', 'scheduling', 'about', 'more']
-const DISCOVER_PAGES: readonly DiscoverPage[] = ['automation', 'connectors']
+const DISCOVER_PAGES: readonly DiscoverPage[] = ['automation', 'connectors', 'devices']
+/** Older top-level addresses of Discover pages. */
+const DISCOVER_ALIASES: Readonly<Record<string, DiscoverPage>> = { connections: 'devices' }
 
 export interface WebRoute {
   view: AppView
@@ -60,7 +62,10 @@ export function readRoute(pathname = window.location.pathname): WebRoute {
   if (parts[0] === 'contacts') return { view: 'contacts' }
   // Discover pages live at the top level; /discover/<page> and the Settings
   // tabs they moved from are older links that still land on them.
-  const discover = DISCOVER_PAGES.includes(parts[0] as DiscoverPage) ? parts[0] : parts[0] === 'discover' ? parts[1] : parts[0] === 'settings' && DISCOVER_PAGES.includes(parts[1] as DiscoverPage) ? parts[1] : undefined
+  // /connections (servers moved from Settings → Connections) opens Devices & Environments;
+  // /settings/connections is still the Settings tab, which now explains the web and desktop apps.
+  const top = DISCOVER_ALIASES[parts[0]] ?? parts[0]
+  const discover = DISCOVER_PAGES.includes(top as DiscoverPage) ? top : parts[0] === 'discover' ? DISCOVER_ALIASES[parts[1]] ?? parts[1] : parts[0] === 'settings' && DISCOVER_PAGES.includes(parts[1] as DiscoverPage) ? parts[1] : undefined
   if (parts[0] === 'discover' || discover) return { view: 'discover', ...(DISCOVER_PAGES.includes(discover as DiscoverPage) ? { discoverPage: discover as DiscoverPage } : {}) }
   if (parts[0] === 'settings') {
     const tab = SETTINGS_TABS.includes(parts[1] as SettingsTab) ? parts[1] as SettingsTab : 'profile'

@@ -7340,6 +7340,7 @@ html.native-dialog-window,
 .discover-item-icon { flex: 0 0 auto; }
 .discover-item-icon.automation { color: #f59e42; }
 .discover-item-icon.connectors { color: var(--accent-500); }
+.discover-item-icon.devices { color: #22a06b; }
 .discover-item-label { flex: 1; min-width: 0; font-size: calc(15px * var(--font-scale, 0.92)); }
 .messenger .discover-workspace { background: var(--pane); }
 .discover-content { flex: 1; min-height: 0; padding: 52px clamp(34px, 5vw, 66px) 56px; }
