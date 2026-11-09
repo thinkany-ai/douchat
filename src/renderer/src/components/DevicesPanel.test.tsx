@@ -144,3 +144,29 @@ it('on the web, lists devices read-only and sends adding and environments to the
   expect(container.textContent).toContain('Add and manage them in the desktop app')
   expect(button('Add')).toBeUndefined()
 })
+
+it('shows this computer first, labelled, without a scan button', async () => {
+  // Main lists this computer first (aglDevices.withThisComputer); the panel keeps that order.
+  api.listAglDevices.mockResolvedValue([device({ machineId: 'mine', name: 'MacBook', thisComputer: true }), device({ machineId: 'mac-2', name: 'Studio' })])
+  await render()
+  const rows = [...container.querySelectorAll('article')].filter(row => row.querySelector('strong'))
+  expect(rows[0].querySelector('strong')?.textContent).toBe('MacBookThis computer')
+  expect(rows[1].querySelector('strong')?.textContent).toBe('Studio')
+  expect(button('Scan for agents on this device MacBook')).toBeUndefined()
+  expect(button('Scan for agents on this device Studio')).toBeTruthy()
+})
+
+it('does not take this computer for the device being added', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  api.listAglDevices.mockResolvedValue([])
+  await render()
+  await act(async () => button('Add device')!.click())
+  // This computer links itself while the dialog is open: it is new, but not the device being added.
+  api.listAglDevices.mockResolvedValue([device({ machineId: 'mine', name: 'MacBook', pairedAt: 500, thisComputer: true })])
+  await act(async () => { await vi.advanceTimersByTimeAsync(PAIRING_POLL_MS * 2) })
+  expect(container.textContent).toContain('Waiting for the device to connect…')
+  api.listAglDevices.mockResolvedValue([device({ machineId: 'mine', name: 'MacBook', pairedAt: 500, thisComputer: true }), device({ machineId: 'new', name: 'Box', pairedAt: 900 })])
+  await act(async () => { await vi.advanceTimersByTimeAsync(PAIRING_POLL_MS) })
+  expect(container.textContent).toContain('The device is online')
+  expect((container.querySelector('input:not([type=checkbox])') as HTMLInputElement).value).toBe('Box')
+})

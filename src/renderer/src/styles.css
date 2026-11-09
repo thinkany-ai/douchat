@@ -7424,3 +7424,4 @@ html.native-dialog-window,
 .agl-switches > label > span { display: flex; flex-direction: column; gap: 4px; font-size: calc(14px * var(--font-scale, 0.92)); }
 .agl-switches small { color: var(--muted); font-size: calc(12px * var(--font-scale, 0.92)); line-height: 1.5; }
 .agl-switches .detail-switch { flex: 0 0 auto; }
+.this-computer-badge { margin-left: 8px; vertical-align: 1px; font-weight: 400; }
