@@ -62,7 +62,7 @@ import { LocalComputerProvider } from './computer'
 import { DouchatRuntime } from './runtime'
 import { RoutineScheduler } from './scheduler'
 import { DouchatStore } from './store'
-import { addCustomLocalAgent, agentsOnConnection, hasRemoteAgent, configureLocalAgentRegistry, connectionRegistry, detectLocalAgents, remoteAgentPlacement, removeAgentsOnConnection, removeCustomLocalAgent, setConnectionAccount, updateLocalAgent, validateLocalAgent } from './localAgents'
+import { addCustomLocalAgent, aglAgentPlacement, agentsOnConnection, hasRemoteAgent, configureLocalAgentRegistry, connectionRegistry, detectLocalAgents, remoteAgentPlacement, removeAgentsOnConnection, removeCustomLocalAgent, setConnectionAccount, updateLocalAgent, validateLocalAgent } from './localAgents'
 import { ConnectionManager } from './connectionManager'
 import { migrateConnections, skippedMigrationAgents } from './connectionStore'
 import { migrateWorkspaceTargets } from './workspaceMigration'
@@ -83,6 +83,11 @@ import { listRemoteDirectories, remoteTerminalArgs, resolveRemoteWorkspace } fro
 import { remoteHostLabel } from './remoteValidate'
 import { probeRemoteAgent } from './remoteTransport'
 import { configureDaemonRelay } from './remote/daemonRelay'
+import { socialRequest } from './remote/socialRequest'
+import { AglHub } from './agl/aglHub'
+import { AglExecutor, routingExecutor } from './agl/aglExecutor'
+import { AglDevices, aglAdapter, aglTargetOf, validMachineId } from './agl/aglDevices'
+import { desktopAgentExecutor } from './desktopAgentExecutor'
 import { canAssignAgentWorkspace, canAssignConversationWorkspace, memberWorkspace, ownMemberAgentIds } from '../shared/conversationWorkspace'
 import { prepareNpmMaintenance, resolveMaintenancePlan } from './localAgentMaintenance'
 import { openMaintenanceTerminal, openLocalAgentTerminal, openSshTerminal } from './terminalLauncher'
@@ -235,6 +240,15 @@ let runtime: DouchatRuntime
 let computer: LocalComputerProvider
 let scheduler: RoutineScheduler
 let auth: DesktopAuth
+// agl devices (Discover → Devices & Environments): reached through the Douchat service with the desktop token.
+const aglHub = new AglHub((body, signal) => socialRequest(webAppUrl, auth, body, signal))
+const aglDevices = new AglDevices(aglHub, connections, () => {
+  const state = auth?.getState()
+  return state?.status === 'signed-in' ? state.user.id : undefined
+}, new URL(webAppUrl).origin, agentsOnConnection)
+connections.setAglBackend(aglDevices)
+/** Agents on an agl device run through agl; every other agent through the desktop executor, unchanged. */
+const agentExecutor = routingExecutor(desktopAgentExecutor, new AglExecutor({ hub: aglHub, resolve: aglTargetOf }))
 let updater: DesktopUpdater
 let connany: ConnanyManager
 let connanyEvents: ReturnType<typeof setInterval> | undefined
@@ -670,7 +684,7 @@ app.whenReady().then(async () => {
         .resize({ width: 256, height: 256, quality: 'best' })
         .toDataURL()
     }
-  }, { revision: () => connany.revision(), snapshot: () => emailConnectors.snapshot(), createTools: (id, hooks) => [...emailConnectors.createTools(id), ...(CONNECTORS_ENABLED ? connany.createTools(id, hooks) : [])], prepare: () => CONNECTORS_ENABLED ? connany.prepareForTurn() : Promise.resolve(), createLocalTools: (id, hooks) => CONNECTORS_ENABLED ? connany.createTools(id, hooks) : [] })
+  }, { revision: () => connany.revision(), snapshot: () => emailConnectors.snapshot(), createTools: (id, hooks) => [...emailConnectors.createTools(id), ...(CONNECTORS_ENABLED ? connany.createTools(id, hooks) : [])], prepare: () => CONNECTORS_ENABLED ? connany.prepareForTurn() : Promise.resolve(), createLocalTools: (id, hooks) => CONNECTORS_ENABLED ? connany.createTools(id, hooks) : [] }, agentExecutor)
   runtime.notifyChangesWith(scheduleBroadcast)
   imChannels = new IMChannelManager(join(app.getPath('userData'), 'im-channels'), {
     encrypt: value => {
@@ -1008,6 +1022,50 @@ app.whenReady().then(async () => {
     connectionChanged(); scheduleBroadcast()
     return connections.list()
   })
+  // ─── agl devices (Discover → Devices & Environments) ───────────────────────
+  ipcMain.handle('douchat:create-agl-pairing', (event) => { connectionRequest(event); return aglHub.createPairing() })
+  ipcMain.handle('douchat:list-agl-devices', (event) => { connectionRequest(event); return aglDevices.list() })
+  ipcMain.handle('douchat:rename-agl-device', async (event, machineId: unknown, name: unknown) => {
+    connectionRequest(event)
+    await aglDevices.rename(validMachineId(machineId), name)
+    connectionChanged(); scheduleBroadcast()
+    return aglDevices.list()
+  })
+  ipcMain.handle('douchat:remove-agl-device', async (event, machineId: unknown, mode: unknown) => {
+    connectionRequest(event)
+    const id = validMachineId(machineId)
+    if (mode !== 'disable-agents' && mode !== 'delete-agents') throw new Error('Invalid device request')
+    const connection = (await aglDevices.list()).find(item => item.machineId === id)?.connectionId
+    if (connection) {
+      // Like removing a connection: turned off first, running turns stopped, then unlinked.
+      await connections.setEnabled(connection, false)
+      await stopAgentsOn(connection)
+      cancelLocalModelQueries()
+      const inUse = (localId: string) => store.agents.some(agent => agent.localAgentId === localId)
+      await removeAgentsOnConnection(connection, mode, inUse)
+      await connections.remove(connection)
+    } else await aglDevices.revokeMachine(id)
+    connectionChanged(); scheduleBroadcast()
+    return aglDevices.list()
+  })
+  ipcMain.handle('douchat:discover-agl-agents', (event, machineId: unknown) => { connectionRequest(event); return aglDevices.agents(validMachineId(machineId), AbortSignal.timeout(60_000)) })
+  ipcMain.handle('douchat:add-agl-agents', async (event, machineId: unknown, chosen: unknown) => {
+    connectionRequest(event)
+    const id = validMachineId(machineId)
+    if (!Array.isArray(chosen) || !chosen.length || chosen.length > 32) throw new Error('Choose agents to add.')
+    // Only agents agl reports as available on this device can be added this way.
+    const found = await aglDevices.agents(id, AbortSignal.timeout(60_000))
+    const connection = await aglDevices.connection(id)
+    for (const item of chosen as Array<{ id?: unknown; name?: unknown }>) {
+      const match = found.find(agent => agent.id === item?.id && agent.available)
+      if (!match) throw new Error('This agent was not found on the device. Scan again.')
+      if (await hasRemoteAgent(connection.id, match.id)) continue
+      const name = typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 80) : match.name
+      await addCustomLocalAgent({ name, command: match.id, remoteAgent: { connectionId: connection.id, adapter: aglAdapter(match.id), executable: match.id, args: [] } })
+    }
+    connectionChanged()
+    return checkLocalAgentUpdates(await detectLocalAgents())
+  })
   ipcMain.handle('douchat:search-messages', (event, id: string, query: string) => {
     if (!isDouchatRenderer(event.sender)) throw new Error('Unknown window')
     return new LocalAccountData(store).searchMessages(id, query)
@@ -1287,6 +1345,7 @@ app.whenReady().then(async () => {
     const conversation = workspaceChat(conversationId)
     const agent = typeof agentId === 'string' ? store.accountAgents.find(item => item.id === agentId) : undefined
     if (!agent || !canAssignAgentWorkspace(conversation, agent, store.currentAccountId)) throw new Error('Only the owner can choose a folder for this agent in this chat.')
+    if (await aglAgentPlacement(agent.localAgentId)) throw new Error('Agents on a device work in their default folder there.')
     const placement = await remoteAgentPlacement(agent.localAgentId)
     const target = placement ? { ...placement.target, location: 'remote' as const } : { ...localExecutionTarget(), location: 'local' as const }
     return { conversation, agent, placement, target }
@@ -1296,6 +1355,8 @@ app.whenReady().then(async () => {
     const members = await Promise.all(ownMemberAgentIds(conversation, store.currentAccountId).map(async (agentId): Promise<MemberWorkspaceView | undefined> => {
       const agent = store.accountAgents.find(item => item.id === agentId)
       if (!agent) return undefined
+      // Agents on an agl device use agl's folder on the device; choosing one is not offered in v1.
+      if (await aglAgentPlacement(agent.localAgentId).catch(() => undefined)) return undefined
       // A member whose connection is off or removed has no folder to set right now.
       const placement = await remoteAgentPlacement(agent.localAgentId).catch(() => null)
       if (placement === null) return undefined
@@ -1631,7 +1692,7 @@ app.whenReady().then(async () => {
   if (skipped.length) {
     diagnostics.write('connections.migration-skipped', JSON.stringify(skipped))
     void dialog.showMessageBox({ type: 'warning', message: ui('Some server agents were not moved to connections', '部分服务器智能体未能迁移到连接'),
-      detail: `${skipped.join(', ')}\n\n${ui('Their saved SSH settings are invalid. They are kept unchanged in local-agents.json; add them again in Settings → Connections.', '它们保存的 SSH 设置无效，已原样保留在 local-agents.json 中。请在「设置 → 连接」中重新添加。')}` })
+      detail: `${skipped.join(', ')}\n\n${ui('Their saved SSH settings are invalid. They are kept unchanged in local-agents.json; add them again in Discover → Devices & Environments.', '它们保存的 SSH 设置无效，已原样保留在 local-agents.json 中。请在「发现 → 设备与环境」中重新添加。')}` })
   }
   void connections.start()
   app.on('browser-window-focus', () => connections.retryFailed())
