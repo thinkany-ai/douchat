@@ -170,3 +170,50 @@ it('does not take this computer for the device being added', async () => {
   expect(container.textContent).toContain('The device is online')
   expect((container.querySelector('input:not([type=checkbox])') as HTMLInputElement).value).toBe('Box')
 })
+
+const aglStatus = (extra: Record<string, unknown> = {}) => ({ state: 'running', home: '/Users/me/.agl', minimumVersion: '0.3.12', running: true, machineId: 'mine', linked: true, hubStatus: 'connected', update: {}, ...extra })
+
+it('asks once before Douchat touches agl', async () => {
+  Object.assign(api, {
+    platform: 'darwin',
+    getAglStatus: vi.fn(async () => aglStatus({ state: 'off' })),
+    getAglSettings: vi.fn(async () => ({ autoLink: true, useForLocalAgents: false })),
+    saveAglSettings: vi.fn(async (patch: object) => ({ autoLink: true, useForLocalAgents: false, ...patch }))
+  })
+  await render()
+  expect(container.textContent).toContain('Run coding agents with agl')
+  await act(async () => button('Enable')!.click())
+  expect(api.saveAglSettings).toHaveBeenCalledWith({ enabled: true })
+  expect(container.textContent).not.toContain('Run coding agents with agl')
+})
+
+it('offers to re-link this computer when its link is missing', async () => {
+  Object.assign(api, {
+    platform: 'darwin',
+    getAglStatus: vi.fn(async () => aglStatus({ linked: false, hubStatus: undefined })),
+    getAglSettings: vi.fn(async () => ({ enabled: true, autoLink: false, useForLocalAgents: false })),
+    relinkAgl: vi.fn(async () => aglStatus())
+  })
+  api.listAglDevices.mockResolvedValue([device({ machineId: 'mac-2', name: 'Studio' })])
+  await render()
+  expect(container.textContent).not.toContain('Run coding agents with agl')
+  const row = [...container.querySelectorAll('article')].find(item => item.querySelector('strong')?.textContent === 'This computer')!
+  expect(row.textContent).toContain('Not linked to your account')
+  api.listAglDevices.mockResolvedValue([device({ machineId: 'mine', name: 'MacBook', thisComputer: true }), device({ machineId: 'mac-2', name: 'Studio' })])
+  await act(async () => button('Re-link')!.click())
+  expect(api.relinkAgl).toHaveBeenCalled()
+  expect(button('Re-link')).toBeUndefined()
+  expect(container.textContent).toContain('MacBookThis computer')
+})
+
+it('offers Re-link on this computer’s row once it was removed elsewhere', async () => {
+  Object.assign(api, {
+    platform: 'darwin',
+    getAglStatus: vi.fn(async () => aglStatus({ hubStatus: 'unauthorized' })),
+    getAglSettings: vi.fn(async () => ({ enabled: true, autoLink: true, useForLocalAgents: false })),
+    relinkAgl: vi.fn(async () => aglStatus())
+  })
+  api.listAglDevices.mockResolvedValue([device({ machineId: 'mine', name: 'MacBook', thisComputer: true })])
+  await render()
+  expect(button('Re-link')).toBeTruthy()
+})

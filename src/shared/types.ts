@@ -891,6 +891,8 @@ export interface DouchatApi extends AccountDataApi, DesktopDeviceApi {
   checkAglUpdates?: () => Promise<import('./agl').AglStatusView>
   getAglSettings?: () => Promise<import('./agl').AglSettings>
   saveAglSettings?: (settings: Partial<import('./agl').AglSettings>) => Promise<import('./agl').AglSettings>
+  /** Removes this computer's agl link to Douchat (a broken one, or another account's) and links it to the signed-in account. */
+  relinkAgl?: () => Promise<import('./agl').AglStatusView>
   onAglStatus?: (listener: (status: import('./agl').AglStatusView) => void) => () => void
   removeCustomLocalAgent: (id: string) => Promise<LocalAgent[]>
   getAttachmentData: (attachmentId: string) => Promise<string>

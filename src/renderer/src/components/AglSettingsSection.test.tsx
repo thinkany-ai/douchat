@@ -17,8 +17,9 @@ beforeEach(() => {
   api = {
     platform: 'darwin',
     getAglStatus: vi.fn(async () => status()),
-    getAglSettings: vi.fn(async () => ({ autoLink: true, useForLocalAgents: false })),
-    saveAglSettings: vi.fn(async (patch: object) => ({ autoLink: true, useForLocalAgents: false, ...patch })),
+    getAglSettings: vi.fn(async () => ({ enabled: true, autoLink: true, useForLocalAgents: false })),
+    saveAglSettings: vi.fn(async (patch: object) => ({ enabled: true, autoLink: true, useForLocalAgents: false, ...patch })),
+    relinkAgl: vi.fn(async () => status()),
     checkAglUpdates: vi.fn(async () => status({ update: { checkedAt: 1_700_000_000_000, latest: '0.3.13', available: true, busy: 1 } })),
     onAglStatus: vi.fn((listener: (value: AglStatusView) => void) => { pushStatus = listener; return () => { pushStatus = undefined } })
   }
@@ -80,4 +81,54 @@ it('describes applied updates', () => {
   expect(aglUpdateLine(status({ update: { appliedAt: 1, appliedVersion: '0.3.13' } }))).toMatch(/^Updated to 0.3.13 on /)
   expect(aglUpdateLine(status({ update: { available: true, latest: '0.3.13' } }))).toBe('agl 0.3.13 is available.')
   expect(aglUpdateLine(status({ update: {} }))).toBe('agl checks for updates by itself every 12 hours.')
+})
+
+it('asks once before touching agl, and saves the answer', async () => {
+  api.getAglStatus.mockResolvedValue(status({ state: 'off', running: true, linked: false, hubStatus: undefined }))
+  api.getAglSettings.mockResolvedValue({ autoLink: true, useForLocalAgents: false })
+  api.saveAglSettings.mockImplementation(async (patch: object) => ({ autoLink: true, useForLocalAgents: false, ...patch }))
+  await render()
+  const text = container.textContent ?? ''
+  expect(text).toContain('Run coding agents with agl')
+  expect(text).toContain('install agl in /Users/me/.agl, which other apps that use agl share;')
+  expect(text).toContain('keep it running in the background (it starts when you log in) and update it automatically;')
+  expect(text).toContain('so the web app and your phone can use its agents')
+  // No switches, no update checks until the user answers.
+  expect(button('Enable agl')).toBeUndefined()
+  expect(button('Check for updates')).toBeUndefined()
+  expect(text).not.toContain('Up to date')
+  await act(async () => button('Not now')!.click())
+  expect(api.saveAglSettings).toHaveBeenCalledWith({ enabled: false })
+  expect(container.textContent).not.toContain('Run coding agents with agl')
+  // The master switch now says off; turning it on is the same consent.
+  const master = button('Enable agl')!
+  expect(master.getAttribute('aria-checked')).toBe('false')
+  expect(button('Show this computer in Devices')).toBeUndefined()
+  await act(async () => master.click())
+  expect(api.saveAglSettings).toHaveBeenLastCalledWith({ enabled: true })
+  expect(button('Show this computer in Devices')).toBeDefined()
+})
+
+it('enables from the card', async () => {
+  api.getAglStatus.mockResolvedValue(status({ state: 'off' }))
+  api.getAglSettings.mockResolvedValue({ autoLink: true, useForLocalAgents: false })
+  await render()
+  await act(async () => button('Enable')!.click())
+  expect(api.saveAglSettings).toHaveBeenCalledWith({ enabled: true })
+  expect(container.textContent).not.toContain('Run coding agents with agl')
+})
+
+it('offers Re-link when this computer is not linked or was removed', async () => {
+  api.getAglStatus.mockResolvedValue(status({ linked: true, hubStatus: 'unauthorized' }))
+  await render()
+  expect(container.textContent).toContain('Removed from your account')
+  await act(async () => button('Re-link')!.click())
+  expect(api.relinkAgl).toHaveBeenCalled()
+  expect(container.textContent).toContain('Linked to your account')
+  expect(button('Re-link')).toBeUndefined()
+
+  api.relinkAgl.mockRejectedValueOnce(new Error('agl connect failed: 401'))
+  await act(async () => pushStatus!(status({ linked: false, hubStatus: undefined })))
+  await act(async () => button('Re-link')!.click())
+  expect(container.querySelector('[role=alert]')?.textContent).toContain('agl connect failed: 401')
 })

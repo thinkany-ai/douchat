@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { AGL_MIN_VERSION, AGL_PROTOCOL, type AglState, type AglStatusView, type AglUpdateInfo } from '../../shared/agl'
 import type { ConnectionEvent } from './aglClient'
 import { ensureExtraPaths as ensureExtraPathsInFile } from './aglConfig'
-import { douchatHubLink, parseAglStatus, parseAglUpdate, type AglStatusJson } from './aglStatus'
+import { douchatHubLink, parseAglStatus, parseAglUpdate, type AglHubLink, type AglStatusJson } from './aglStatus'
 import { isOlder, meetsMinimum, parseAglVersion, shouldInstallBundled } from './aglVersion'
 
 export interface AglCommandResult { code: number | null; stdout: string; stderr: string }
@@ -20,6 +20,12 @@ export interface AglLifecycleOptions {
   platform: NodeJS.Platform
   /** False in a development run without an explicit agl home: nothing is touched. */
   enabled: boolean
+  /**
+   * The user agreed to let Douchat manage agl (Settings → Agents → agl). While
+   * false, only `agl --version` and `agl status --json` run, to show the state.
+   * Default: agreed.
+   */
+  consented?: () => boolean
   /** The agl home (AGL_HOME) to manage; ~/.agl unless overridden. */
   home: string
   /** `home` is the user's real ~/.agl. Only then is the per-user autostart service installed or used. */
@@ -114,10 +120,13 @@ export class AglLifecycle {
   private readonly restartListeners = new Set<() => void>()
 
   constructor(private readonly options: AglLifecycleOptions) {
-    this.state = options.platform === 'win32' ? 'unsupported' : options.enabled ? 'starting' : 'disabled'
+    this.state = options.platform === 'win32' ? 'unsupported' : !options.enabled ? 'disabled' : this.consented ? 'starting' : 'off'
   }
 
   get supported(): boolean { return this.state !== 'unsupported' && this.state !== 'disabled' }
+  /** Douchat may change things: install, start, update, link. */
+  private get consented(): boolean { return this.options.consented?.() ?? true }
+  private get managing(): boolean { return this.supported && this.consented && !this.disposed }
   /** `<home>/bin/agl`: where the install script and Douchat put agl, and where it updates itself. */
   get binary(): string { return join(this.options.home, 'bin', 'agl') }
   get home(): string { return this.options.home }
@@ -161,10 +170,11 @@ export class AglLifecycle {
 
   private log(event: string, detail?: string): void { this.options.log?.(event, detail) }
 
-  /** Starts managing agl in the background; safe to call again (on sign-in). */
+  /** Starts managing agl in the background; safe to call again (on sign-in). Without consent it only reads agl's state. */
   start(): void {
     if (!this.supported || this.disposed) return
     void this.refresh()
+    if (!this.consented) return
     if (!this.updateTimer) this.scheduleUpdate(this.options.firstUpdateCheckMs ?? 2 * 60_000)
   }
 
@@ -196,20 +206,67 @@ export class AglLifecycle {
     return this.status
   }
 
-  /** Runs every step once; concurrent calls share one run. */
+  /**
+   * The user turned agl on or off (the consent card or the master switch).
+   * Off stops everything Douchat would do from now on: no update checks, no
+   * restarts, no links, and the connection is closed. Nothing is uninstalled
+   * or stopped: the shared daemon belongs to the user and other apps.
+   */
+  consentChanged(): void {
+    if (!this.supported || this.disposed) return
+    if (this.consented) {
+      if (this.state !== 'off') return
+      this.state = 'starting'
+      this.start()
+      return
+    }
+    this.release()
+    this.error = undefined
+    this.linkError = undefined
+    this.emit()
+    void this.refresh()
+  }
+
+  /** Stops every timer and closes the connection; the daemon keeps running. */
+  private release(): void {
+    clearTimeout(this.updateTimer); this.updateTimer = undefined
+    clearTimeout(this.recoveryTimer); this.recoveryTimer = undefined
+    this.connectionOff?.(); this.connectionOff = undefined
+    this.connection?.close(); this.connection = undefined
+    this.state = 'off'
+  }
+
+  /** Runs every step once (only reads agl's state without consent); concurrent calls share one run. */
   refresh(): Promise<AglStatusView> {
     if (!this.supported || this.disposed) return Promise.resolve(this.view())
-    this.refreshing ??= this.ensure().catch((error) => {
+    this.refreshing ??= (this.consented ? this.ensure() : this.inspect()).catch((error) => {
       this.error = message(error)
       if (this.state === 'starting') this.state = 'error'
       this.log('agl.error', this.error)
     }).then(() => {
       this.refreshing = undefined
+      // Turned off while this run was still starting agl: let go of what it set up.
+      if (!this.consented && this.state !== 'off') this.release()
       this.emit()
       return this.view()
     })
     this.emit()
     return this.refreshing
+  }
+
+  /** Without consent: `--version` of both binaries and `agl status --json`, nothing else. */
+  private async inspect(): Promise<void> {
+    const options = this.options
+    this.error = undefined
+    this.state = 'off'
+    this.bundledVersion = options.bundledBin && await options.fileExists(options.bundledBin) ? await this.version(options.bundledBin) : undefined
+    const exists = await options.fileExists(this.binary)
+    this.binaryVersion = exists ? await this.version(this.binary) : undefined
+    this.status = undefined
+    this.daemonVersion = undefined
+    if (!exists) return
+    const status = await this.readStatus()
+    this.daemonVersion = status.daemonVersion
   }
 
   private async ensure(): Promise<void> {
@@ -305,7 +362,7 @@ export class AglLifecycle {
   }
 
   private connectionChanged(event: ConnectionEvent): void {
-    if (this.disposed) return
+    if (!this.managing) return
     if (event.state === 'disconnected') {
       this.log('agl.disconnected')
       if (this.state === 'running') this.state = 'stopped'
@@ -354,7 +411,7 @@ export class AglLifecycle {
    * restarts its daemon; the client reconnects by itself.
    */
   checkForUpdates(apply = true): Promise<AglStatusView> {
-    if (!this.supported || this.disposed) return Promise.resolve(this.view())
+    if (!this.managing) return Promise.resolve(this.view())
     this.updating ??= (async () => {
       this.emit()
       if (!(await this.options.fileExists(this.binary))) return
@@ -389,6 +446,7 @@ export class AglLifecycle {
 
   /** `agl connect <hub> --code <code> --transport http`: links this machine to a hub. The code is never logged. */
   async connectHub(hubUrl: string, code: string): Promise<void> {
+    if (!this.managing) throw new Error('agl is turned off in Settings → Agents.')
     const result = await this.agl(['connect', hubUrl, '--code', code, '--transport', 'http'], 60_000)
     if (result.code !== 0) throw new Error(`agl connect failed: ${output(result).replaceAll(code, '…')}`)
     await this.readStatus().catch(() => undefined)
@@ -397,10 +455,16 @@ export class AglLifecycle {
 
   /** `agl disconnect <hub>`: unlinks this machine from that hub only. */
   async disconnectHub(hubUrl: string): Promise<void> {
+    if (!this.managing) throw new Error('agl is turned off in Settings → Agents.')
     const result = await this.agl(['disconnect', hubUrl], 30_000)
     if (result.code !== 0) throw new Error(`agl disconnect failed: ${output(result)}`)
     await this.readStatus().catch(() => undefined)
     this.emit()
+  }
+
+  /** The link to the Douchat service's hub, as the last `agl status --json` showed it. */
+  douchatLink(): AglHubLink | undefined {
+    return this.status ? douchatHubLink(this.status, this.hubUrls) : undefined
   }
 
   /** Re-reads `agl status --json` without changing anything. */

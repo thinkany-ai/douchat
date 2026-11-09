@@ -222,3 +222,58 @@ it('links to a hub without logging the code, and leaves Windows and disabled run
     idle.dispose()
   }
 })
+
+it('without consent only reads `--version` and `status --json`, and starts managing once the user agrees', async () => {
+  vi.useFakeTimers()
+  let consent = false
+  const agl = fakeAgl({ binary: '0.3.11', bundled: '0.3.12', running: true, service: false, hubs: [{ url: 'https://douchat.ai/agl', status: 'connected' }] })
+  const options = agl.options({ consented: () => consent })
+  lifecycle = new AglLifecycle(options)
+  lifecycle.setHubUrls(['https://douchat.ai/agl'])
+  expect(lifecycle.view().state).toBe('off')
+  lifecycle.start()
+  const view = await lifecycle.refresh()
+  // What agl there is, shown as it is: nothing installed, started, updated or connected.
+  expect(view).toMatchObject({ state: 'off', version: '0.3.11', bundledVersion: '0.3.12', running: true, linked: true })
+  expect(new Set(agl.commands)).toEqual(new Set(['bundled --version', 'agl --version', 'agl status --json']))
+  expect(options.installBinary).not.toHaveBeenCalled()
+  expect(options.connect).not.toHaveBeenCalled()
+  expect(lifecycle.client()).toBeUndefined()
+  await vi.advanceTimersByTimeAsync(13 * 3_600_000)
+  expect(agl.commands.some(command => command.startsWith('agl update'))).toBe(false)
+  expect(await lifecycle.checkForUpdates()).toMatchObject({ state: 'off' })
+  await expect(lifecycle.connectHub('https://douchat.ai/agl', 'c0de')).rejects.toThrow('turned off')
+  await expect(lifecycle.disconnectHub('https://douchat.ai/agl')).rejects.toThrow('turned off')
+  expect(agl.commands.some(command => /^agl (connect|disconnect|service|start|stop|update)/.test(command))).toBe(false)
+
+  consent = true
+  lifecycle.consentChanged()
+  await vi.waitFor(() => expect(lifecycle!.view().state).toBe('running'))
+  expect(options.installBinary).toHaveBeenCalled()
+  expect(agl.commands).toContain('agl service install')
+  expect(lifecycle.client()).toBe(agl.connection)
+})
+
+it('turning agl off stops what Douchat does, uninstalls nothing, and ignores the daemon from then on', async () => {
+  vi.useFakeTimers()
+  let consent = true
+  const agl = fakeAgl({ binary: '0.3.12', running: true, service: true })
+  const options = agl.options({ consented: () => consent })
+  lifecycle = new AglLifecycle(options)
+  lifecycle.start()
+  await lifecycle.refresh()
+  expect(lifecycle.client()).toBe(agl.connection)
+  agl.commands.length = 0
+
+  consent = false
+  lifecycle.consentChanged()
+  expect(lifecycle.view().state).toBe('off')
+  expect(lifecycle.client()).toBeUndefined()
+  expect(agl.connection.close).toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(13 * 3_600_000)
+  // A restart reported by the old connection changes nothing either.
+  agl.emit({ state: 'reconnected', restarted: true })
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(agl.commands.every(command => command === 'agl --version' || command === 'bundled --version' || command === 'agl status --json')).toBe(true)
+  expect(agl.commands.some(command => /stop|uninstall|service/.test(command))).toBe(false)
+})

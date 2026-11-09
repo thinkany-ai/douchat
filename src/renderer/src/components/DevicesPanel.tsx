@@ -6,6 +6,7 @@ import { t, tr } from '../preferences'
 import { agentIcons } from '../agentIcons'
 import { NativeDialog } from './NativeDialog'
 import { DesktopAppLinks, ServerConnections, useDesktopOnline } from './ConnectionsPanel'
+import { AglConsentCard, AglRelinkButton, aglNeedsRelink, useAgl } from './AglSettingsSection'
 
 export type DevicesTab = 'devices' | 'environments'
 /** How often the add-device dialog looks for the newly linked machine. */
@@ -82,6 +83,10 @@ function DevicesTabPanel({ web, agents, onAgentsChange, onShowAgents }: { web: b
   const [renaming, setRenaming] = useState<AglDeviceView>()
   const [menu, setMenu] = useState<string>()
   const desktopOnline = useDesktopOnline(web)
+  const agl = useAgl()
+  // This computer is not linked (or its link was removed elsewhere): offer to link it again.
+  const relink = !web && agl.settings?.enabled === true && aglNeedsRelink(agl.status)
+  const relinked = (): void => { load() }
   const load = useCallback(() => {
     void window.douchat.listAglDevices().then(setDevices, cause => { setDevices(current => current ?? []); setError(messageSendError(cause)) })
     // douchat-host servers are managed in the desktop app only.
@@ -124,8 +129,17 @@ function DevicesTabPanel({ web, agents, onAgentsChange, onShowAgents }: { web: b
       <p className="settings-note">{t('Link any machine to your Douchat account by running one command on it. It connects out to Douchat, so it needs no open port, and Douchat drives the coding agents on it through agl.')}</p>
       <div className="connection-add"><button className="secondary-button" onClick={() => setAdding(true)}><Plus size={15} />{t('Add device')}</button></div>
     </>}
+    {!web && <AglConsentCard status={agl.status} settings={agl.settings} onSave={agl.save} />}
     {error && <p className="settings-error" role="alert">{t(error)}</p>}
-    {devices && !devices.length && !hosts.length && <p className="settings-note">{t(web ? 'No devices yet.' : 'No devices yet. Add one and run the install command on it.')}</p>}
+    {relink && devices && !devices.some(device => device.thisComputer) && <section aria-label={t('This computer')}><article className="local-agent-row connection-row">
+      <span className="local-agent-icon"><Laptop size={20} /></span>
+      <div className="local-agent-copy">
+        <strong>{t('This computer')}</strong>
+        <span className="connection-status connection-status-disabled" role="status"><i aria-hidden="true" />{t(agl.status?.hubStatus === 'unauthorized' ? 'Removed from your account' : 'Not linked to your account')}</span>
+      </div>
+      <div className="local-agent-row-aside"><AglRelinkButton onDone={next => { agl.setStatus(next); relinked() }} onError={setError} /></div>
+    </article></section>}
+    {devices && !devices.length && !hosts.length && !relink && <p className="settings-note">{t(web ? 'No devices yet.' : 'No devices yet. Add one and run the install command on it.')}</p>}
     {devices && devices.length > 0 && <section aria-label={t('Devices')}>{devices.map(device => <article className="local-agent-row connection-row" key={device.machineId}>
       {!web && device.connectionId && <button type="button" className="detail-switch" role="switch" aria-label={`${t('Enabled')} ${deviceName(device)}`} aria-checked={device.enabled !== false}
         onClick={() => void run(async () => { await window.douchat.setConnectionEnabled(device.connectionId!, device.enabled === false); return window.douchat.listAglDevices() })} />}
@@ -136,6 +150,7 @@ function DevicesTabPanel({ web, agents, onAgentsChange, onShowAgents }: { web: b
         {deviceDetails(device) && <code title={device.machineId}>{deviceDetails(device)}</code>}
       </div>
       {!web && <div className="local-agent-row-aside">
+        {device.thisComputer && relink && <AglRelinkButton onDone={next => { agl.setStatus(next); relinked() }} onError={setError} />}
         {/* This computer's agents run here directly; they are in Settings → Agents. */}
         {!device.thisComputer && <button type="button" className="secondary-button" disabled={!device.online || device.enabled === false} title={t('Scan for agents on this device')} aria-label={`${t('Scan for agents on this device')} ${deviceName(device)}`} onClick={() => setScanning(device)}><ScanSearch size={15} /></button>}
         <div className="connection-menu">

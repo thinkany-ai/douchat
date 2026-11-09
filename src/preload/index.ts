@@ -95,6 +95,7 @@ const api: DouchatApi = {
   checkAglUpdates: () => ipcRenderer.invoke('douchat:check-agl-updates'),
   getAglSettings: () => ipcRenderer.invoke('douchat:agl-settings'),
   saveAglSettings: (settings) => ipcRenderer.invoke('douchat:save-agl-settings', settings),
+  relinkAgl: () => ipcRenderer.invoke('douchat:relink-agl'),
   onAglStatus: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, status: import('../shared/agl').AglStatusView): void => listener(status)
     ipcRenderer.on('douchat:agl-status', handler)

@@ -259,7 +259,9 @@ const aglLifecycle = new AglLifecycle({
   run: runAgl, fileExists, installBinary: (from, to) => installAglBinary(from, to), environment: spawnEnvironment, connect: connectAgl,
   // Douchat's managed npm prefix and Node runtime, where it installs agent CLIs.
   extraPaths: managedSearchPaths, ownedRoot: join(app.getPath('userData'), 'local-tools'),
-  serviceStartCommand: () => serviceStartCommand(), log: (event, detail) => diagnostics.write(event, detail ?? '')
+  serviceStartCommand: () => serviceStartCommand(), log: (event, detail) => diagnostics.write(event, detail ?? ''),
+  // Nothing in ~/.agl changes until the user agrees (the one-time card in Devices and Settings → Agents).
+  consented: () => aglSettingsStore.get().enabled === true
 })
 aglLifecycle.setHubUrls([...aglHubUrls])
 const signedInAccount = (): string | undefined => {
@@ -276,6 +278,9 @@ const thisComputer = new ThisComputerLinker({
     return pairing
   },
   settings: () => aglSettingsStore.get(), account: signedInAccount,
+  linkedAccount: () => aglSettingsStore.linkedAccount,
+  rememberLinkedAccount: account => aglSettingsStore.setLinkedAccount(account),
+  listedForAccount: async machineId => (await aglDevices.devices(true)).some(device => device.machineId === machineId),
   linked: () => notifyWindows(BrowserWindow.getAllWindows(), 'douchat:connections-changed'),
   log: (event, detail) => diagnostics.write(event, detail ?? '')
 })
@@ -1102,7 +1107,7 @@ app.whenReady().then(async () => {
       // Removing this computer is a choice: stop linking it again, and drop agl's now revoked link.
       await aglSettingsStore.save({ autoLink: false })
       const link = douchatHubLink(aglLifecycle.lastStatus() ?? { hubs: [] }, [...aglHubUrls])
-      if (link) await aglLifecycle.disconnectHub(link.url).catch(error => diagnostics.write('agl.disconnect-failed', String(error)))
+      if (link) await aglLifecycle.disconnectHub(link.url).then(() => aglSettingsStore.setLinkedAccount(undefined)).catch(error => diagnostics.write('agl.disconnect-failed', String(error)))
     }
     connectionChanged(); scheduleBroadcast()
     return aglDevices.list()
@@ -1123,9 +1128,21 @@ app.whenReady().then(async () => {
     aglRequest(event)
     const before = aglSettingsStore.get()
     const next = await aglSettingsStore.save(input)
+    if (next.enabled !== before.enabled) {
+      diagnostics.write('agl.consent', next.enabled ? 'enabled' : 'off')
+      aglLifecycle.consentChanged()
+      aglAgents.invalidate()
+    }
     if (next.autoLink && !before.autoLink) void thisComputer.maybeLink()
     if (next.useForLocalAgents !== before.useForLocalAgents) useAglForLocalAgents(next.useForLocalAgents)
     return next
+  })
+  ipcMain.handle('douchat:relink-agl', async (event) => {
+    aglRequest(event)
+    // Asking to link again also means: show this computer in Devices.
+    if (!aglSettingsStore.get().autoLink) await aglSettingsStore.save({ autoLink: true })
+    await thisComputer.relink()
+    return aglLifecycle.view()
   })
   ipcMain.handle('douchat:discover-agl-agents', (event, machineId: unknown) => { connectionRequest(event); return aglDevices.agents(validMachineId(machineId), AbortSignal.timeout(60_000)) })
   ipcMain.handle('douchat:add-agl-agents', async (event, machineId: unknown, chosen: unknown) => {
