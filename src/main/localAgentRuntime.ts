@@ -23,6 +23,7 @@ import type { RemoteAgentSpec } from '../shared/types'
 import { RemoteRun, outboxPrompt } from './remoteFileChannel'
 import { assertArgvPrompt, remotePrompt } from './remoteTransport'
 import { openSshTransport } from './remote/sshTransport'
+import { conversationMatcher } from './sessionKeys'
 import { PROMPT_ARG, customRemoteArguments, markPromptArguments, type PromptChannel, type RemoteArg, type RemoteWorkspaceRef } from './remoteScript'
 
 /** Optional locally built Grok with the macOS socket-denial compatibility patch.
@@ -675,13 +676,6 @@ export function disposeAllLocalAgentSessions(): void {
 export function disposeLocalAgentSessions(agentId: string): void {
   for (const run of activeLocalRuns) if (run.agentId === agentId) run.abort.abort(new Error('Stopped'))
   for (const [key, entry] of connections) if (entry.config.id === agentId) evictConnection(key, entry)
-}
-function conversationMatcher(conversationId: string, topicId?: string, directAgentIds: string[] = []): (sessionKey: string) => boolean {
-  const prefixes = [`direct:${conversationId}:`, `group:${encodeURIComponent(conversationId)}:`, `handoff:${conversationId}:`]
-  return (sessionKey) => {
-    const incoming = sessionKey.startsWith('a2a:') && directAgentIds.some(id => sessionKey.includes(`:bot:${encodeURIComponent(id)}:topic:`))
-    return (incoming || prefixes.some(prefix => sessionKey.startsWith(prefix))) && (!topicId || sessionKey.includes(encodeURIComponent(topicId)))
-  }
 }
 /** Close idle processes for this chat after its folder changes. Running turns
  * finish undisturbed; the connection key includes the folder, so later turns

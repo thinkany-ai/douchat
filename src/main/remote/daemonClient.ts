@@ -8,6 +8,7 @@ import { daemonAgentDefinitions } from '../localAgents'
 import { localExecutionTarget } from '../localWorkspaces'
 import { canonicalJson, sha256Hex, signCommand, type SignedCommand } from './ownerSigning'
 import type { RelayBackend } from './daemonRelay'
+import { socialIdentity, socialRequest } from './socialRequest'
 import { approvalDecision, RemoteApprovals, REMOTE_APPROVAL_PREFIX, type RemoteApprovalContext } from './remoteApprovals'
 
 const ENROLLMENT_PREFIX = 'dch1_'
@@ -130,26 +131,10 @@ export class DaemonClient implements DaemonBackend, RemoteExecutionBridge {
 
   // ───────────────────────────── transport ─────────────────────────────
 
-  private identity() {
-    const state = this.auth.getState()
-    const token = this.auth.getAccessToken()
-    if (state.status !== 'signed-in' || !token) throw new Error('Sign in first.')
-    return { id: state.user.id, token }
-  }
+  private identity() { return socialIdentity(this.auth) }
 
-  private async request<T>(body: object, signal?: AbortSignal, identity = this.identity()): Promise<T> {
-    const response = await fetch(new URL('/api/desktop-auth/social', this.url), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${identity.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25_000)]) : AbortSignal.timeout(25_000)
-    })
-    const current = this.identity()
-    if (current.id !== identity.id || current.token !== identity.token) throw new Error('The account changed. Try again.')
-    if (response.status === 401) { await this.auth.invalidateSession(); throw new Error('Your session expired. Sign in again.') }
-    const payload = await response.json().catch(() => null)
-    if (!response.ok || payload?.data === undefined) throw new Error(payload?.message || 'The Douchat service could not be reached. Try again later.')
-    return payload.data as T
+  private request<T>(body: object, signal?: AbortSignal, identity = this.identity()): Promise<T> {
+    return socialRequest<T>(this.url, this.auth, body, signal, identity)
   }
 
   private sign<T extends Record<string, unknown>>(hostId: string, method: string, payload: T, serviceUrl = this.url): SignedCommand<T> {
