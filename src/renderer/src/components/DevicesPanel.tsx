@@ -12,7 +12,14 @@ export type DevicesTab = 'devices' | 'environments'
 export const PAIRING_POLL_MS = 2_000
 
 const deviceName = (device: AglDeviceView): string => device.name || device.hostname || device.machineId
-const deviceDetails = (device: AglDeviceView): string => [device.hostname, [device.os, device.arch].filter(Boolean).join('/'), device.version ? `agl ${device.version}` : ''].filter(Boolean).join(' · ')
+// agl reports Rust's names (macos, aarch64); show the ones people know.
+const OS_NAMES: Record<string, string> = { macos: 'macOS', linux: 'Linux', windows: 'Windows' }
+const ARCH_NAMES: Record<string, string> = { aarch64: 'arm64', x86_64: 'x64' }
+export const deviceDetails = (device: AglDeviceView): string => [
+  device.hostname,
+  [OS_NAMES[device.os] ?? device.os, ARCH_NAMES[device.arch] ?? device.arch].filter(Boolean).join(' '),
+  device.version ? `agl ${device.version}` : ''
+].filter(Boolean).join(' · ')
 /** An agent agl reports on a device that is already one of this computer's agents. */
 const alreadyAdded = (agents: LocalAgent[], device: Pick<AglDeviceView, 'machineId' | 'connectionId'>, agent: AglDeviceAgent): boolean =>
   agents.some(item => (item.agl?.machineId === device.machineId && item.agl.agent === agent.id)

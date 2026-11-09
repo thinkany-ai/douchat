@@ -42,7 +42,7 @@ it('lists devices with douchat-host servers on Devices, and SSH servers on Envir
   expect([...container.querySelectorAll('[role=tab]')].map(tab => tab.textContent)).toEqual(['Devices', 'Environments'])
   expect(container.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('Devices')
   expect(container.textContent).toContain('Studio')
-  expect(container.textContent).toContain('studio.local · macos/aarch64 · agl 0.3.11')
+  expect(container.textContent).toContain('studio.local · macOS arm64 · agl 0.3.11')
   expect(container.textContent).toContain('Old host')
   expect(container.textContent).not.toContain('Box')
   expect(button('Add device')).toBeTruthy()
