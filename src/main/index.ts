@@ -10,7 +10,7 @@ import { replyToIM } from './imReply'
 import { IMChannelManager } from './imChannels'
 import { testLocalAgent } from './localAgentTest'
 import { listSshHosts } from './sshHosts'
-import { listLocalAgentModels, cancelLocalModelQueries } from './localAgentModels'
+import { listLocalAgentModels, cancelLocalModelQueries, configureAglModels } from './localAgentModels'
 import { disposeAllLocalAgentSessions } from './localAgentRuntime'
 import { localModelId, configurableLocalAgents, localAgentAdapter } from '../shared/localModels'
 import { thinkingLevel } from '../shared/thinkingLevels'
@@ -62,7 +62,7 @@ import { LocalComputerProvider } from './computer'
 import { DouchatRuntime } from './runtime'
 import { RoutineScheduler } from './scheduler'
 import { DouchatStore } from './store'
-import { addCustomLocalAgent, aglAgentPlacement, agentsOnConnection, hasRemoteAgent, configureLocalAgentRegistry, connectionRegistry, detectLocalAgents, remoteAgentPlacement, removeAgentsOnConnection, removeCustomLocalAgent, setConnectionAccount, updateLocalAgent, validateLocalAgent } from './localAgents'
+import { addCustomLocalAgent, configureAglDetection, aglAgentPlacement, agentsOnConnection, hasRemoteAgent, configureLocalAgentRegistry, connectionRegistry, detectLocalAgents, remoteAgentPlacement, removeAgentsOnConnection, removeCustomLocalAgent, setConnectionAccount, updateLocalAgent, validateLocalAgent } from './localAgents'
 import { ConnectionManager } from './connectionManager'
 import { migrateConnections, skippedMigrationAgents } from './connectionStore'
 import { migrateWorkspaceTargets } from './workspaceMigration'
@@ -92,6 +92,7 @@ import { AglSettingsStore } from './agl/aglSettingsStore'
 import { ThisComputerLinker } from './agl/aglThisComputer'
 import { bundledAglPath, connectAgl, fileExists, installAglBinary, resolveAglHome, runAgl, serviceStartCommand } from './agl/aglLocal'
 import { douchatHubLink } from './agl/aglStatus'
+import { AglAgentCatalog } from './agl/aglAgents'
 import { desktopAgentExecutor } from './desktopAgentExecutor'
 import { canAssignAgentWorkspace, canAssignConversationWorkspace, memberWorkspace, ownMemberAgentIds } from '../shared/conversationWorkspace'
 import { prepareNpmMaintenance, resolveMaintenancePlan } from './localAgentMaintenance'
@@ -278,6 +279,15 @@ const thisComputer = new ThisComputerLinker({
   linked: () => notifyWindows(BrowserWindow.getAllWindows(), 'douchat:connections-changed'),
   log: (event, detail) => diagnostics.write(event, detail ?? '')
 })
+// Experimental, off by default: detection and model lists of the agents agl supports come from agl.
+const aglAgents = new AglAgentCatalog(() => aglLifecycle.client())
+function useAglForLocalAgents(on: boolean): void {
+  configureAglDetection(on ? () => aglAgents.agents() : undefined)
+  configureAglModels(on ? (id) => aglAgents.models(id) : undefined)
+  aglAgents.invalidate()
+}
+useAglForLocalAgents(aglSettingsStore.get().useForLocalAgents)
+aglLifecycle.onRestart(() => aglAgents.invalidate())
 aglLifecycle.onStatus((view) => {
   notifyWindows(BrowserWindow.getAllWindows(), 'douchat:agl-status', view)
   if (view.state === 'running' && !view.busy) void thisComputer.maybeLink()
@@ -905,7 +915,15 @@ app.whenReady().then(async () => {
     if (typeof localAgentId !== 'string' || !localAgentId) throw new Error('Local agent not found')
     return listLocalAgentModels(localAgentId)
   })
-  ipcMain.handle('douchat:detect-local-agents', async () => { resetShellPath(); return checkLocalAgentUpdates(await detectLocalAgents()) })
+  ipcMain.handle('douchat:detect-local-agents', async () => {
+    resetShellPath()
+    if (aglSettingsStore.get().useForLocalAgents) {
+      // A CLI may just have been installed: agl looks at the login shell and extra_paths again.
+      await aglLifecycle.reloadEnvironment()
+      aglAgents.invalidate()
+    }
+    return checkLocalAgentUpdates(await detectLocalAgents())
+  })
   ipcMain.handle('douchat:open-local-agent-terminal', (event, id: unknown) => {
     if (!isDouchatRenderer(event.sender) || id !== 'claude') throw new Error('Invalid local agent terminal request')
     return openLocalAgentTerminal(id, {
@@ -1106,6 +1124,7 @@ app.whenReady().then(async () => {
     const before = aglSettingsStore.get()
     const next = await aglSettingsStore.save(input)
     if (next.autoLink && !before.autoLink) void thisComputer.maybeLink()
+    if (next.useForLocalAgents !== before.useForLocalAgents) useAglForLocalAgents(next.useForLocalAgents)
     return next
   })
   ipcMain.handle('douchat:discover-agl-agents', (event, machineId: unknown) => { connectionRequest(event); return aglDevices.agents(validMachineId(machineId), AbortSignal.timeout(60_000)) })
