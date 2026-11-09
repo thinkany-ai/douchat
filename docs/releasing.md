@@ -67,3 +67,30 @@ The R2 token is restricted to the `douchat` bucket and exists only in GitHub
 Actions Secrets; downloads through `cdn.douchat.ai` are public and credential-free.
 The local `package:mac` command explicitly disables signing and notarization, so
 it is suitable for smoke testing but not distribution or automatic-update tests.
+
+## Bundled agl
+
+Packaged macOS and Linux builds ship the [agl](https://github.com/thinkany-ai/agl)
+binary as `<resources>/bin/agl`. Douchat installs it into the shared
+`~/.agl/bin/agl` on first launch (never over a newer one) and runs it as the
+local agent daemon; see `src/main/agl/aglLifecycle.ts`.
+
+- The version is pinned once, in `package.json` → `"agl": { "version": … }`.
+  `DOUCHAT_AGL_VERSION` overrides it for one build.
+- `npm run package*` and `npm run release:mac` run `scripts/fetch-agl.mjs`
+  first. It downloads `agl-<target>` and `agl-<target>.sha256` from the
+  `v<version>` GitHub release (`darwin-arm64`, `darwin-x64`, `linux-x64`,
+  `linux-arm64`), refuses a checksum mismatch, and places the binary under
+  `resources/bin/<target>/agl` (git-ignored). electron-builder copies it with
+  `build.mac.extraResources` / `build.linux.extraResources`.
+- **The pinned agl version must be released on GitHub before packaging.**
+  Packaging fails with `HTTP 404 (is this agl version released?)` otherwise.
+- macOS signing: `@electron/osx-sign` signs every Mach-O file in the bundle,
+  including `Contents/Resources/bin/agl`, with the app's Developer ID, hardened
+  runtime and `entitlementsInherit`, and the binary is notarized with the app.
+- Windows builds bundle nothing: agl does not support Windows, and Douchat keeps
+  its own local runtime there.
+- Development: `DOUCHAT_AGL_BIN=/path/to/agl` makes `fetch-agl.mjs` copy that
+  binary for the host's own target (refused with `--release`), and makes a
+  development run of the app use it as the bundled agl. A development run leaves
+  the shared `~/.agl` alone unless `DOUCHAT_AGL_HOME` names an agl home.
