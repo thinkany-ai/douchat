@@ -27,6 +27,16 @@ export async function aglTargetOf(config: AgentConfig, options: LocalRunOptions)
 }
 
 /**
+ * Marks this computer (by its agl machine id) and lists it first; the others
+ * keep the service's order.
+ */
+export function withThisComputer(views: AglDeviceView[], machineId: string | undefined): AglDeviceView[] {
+  if (!machineId) return views
+  const marked = views.map(view => view.machineId === machineId ? { ...view, thisComputer: true } : view)
+  return [...marked.filter(view => view.thisComputer), ...marked.filter(view => !view.thisComputer)]
+}
+
+/**
  * Devices linked to the account through agl: the service's list joined with
  * the local connections their agents run on. Also the connection manager's
  * backend for `agl` connections (online check and revoke).
@@ -38,7 +48,9 @@ export class AglDevices implements AglBackend {
     private readonly connections: Pick<ConnectionManager, 'store' | 'saveAgl' | 'status'>,
     private readonly ownerId: () => string | undefined,
     private readonly serviceUrl: string,
-    private readonly agentsOn: (connectionId: string) => Promise<string[]>
+    private readonly agentsOn: (connectionId: string) => Promise<string[]>,
+    /** This computer's agl machine id, while agl runs here. */
+    private readonly localMachineId: () => string | undefined = () => undefined
   ) {}
 
   private owner(): string {
@@ -73,7 +85,7 @@ export class AglDevices implements AglBackend {
       views.push({ machineId: connection.agl!.machineId, name: connection.name, hostname: '', os: '', arch: '', version: '', online: false, lastSeenAt: null, pairedAt: 0, agents: [],
         connectionId: connection.id, enabled: connection.enabled, agentIds: await this.agentsOn(connection.id) })
     }
-    return views
+    return withThisComputer(views, this.localMachineId())
   }
 
   async check(connection: RemoteConnection): Promise<number> {

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { AglDevice } from '../../shared/types'
 import { ConnectionStore } from '../connectionStore'
-import { AglDevices, aglAdapter } from './aglDevices'
+import { AglDevices, aglAdapter, withThisComputer } from './aglDevices'
 
 let directory = ''
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'douchat-agl-')) })
@@ -68,4 +68,15 @@ it('files agl agents under the matching Douchat adapter', () => {
   expect(aglAdapter('codex')).toBe('codex')
   expect(aglAdapter('droid')).toBe('custom')
   expect(aglAdapter('custom')).toBe('custom')
+})
+
+it('lists this computer first, marked by its agl machine id', async () => {
+  const views = [device({ machineId: 'a' }), device({ machineId: 'b' }), device({ machineId: 'c' })].map(item => ({ ...item, agentIds: [] }))
+  expect(withThisComputer(views, 'b').map(item => [item.machineId, item.thisComputer ?? false])).toEqual([['b', true], ['a', false], ['c', false]])
+  expect(withThisComputer(views, undefined)).toBe(views)
+  expect(withThisComputer(views, 'elsewhere').some(item => item.thisComputer)).toBe(false)
+  const store = new ConnectionStore(join(directory, 'connections.json'))
+  const hub = { listDevices: vi.fn(async () => [device({ machineId: 'other' }), device({ machineId: 'mine', name: 'MacBook' })]), renameDevice: vi.fn(), revokeDevice: vi.fn(), agents: vi.fn(async () => []) }
+  const devices = new AglDevices(hub, { store, status: () => ({ state: 'disabled' as const }), saveAgl: input => store.saveAgl(input) }, () => 'alice', 'https://douchat.ai', async () => [], () => 'mine')
+  expect((await devices.list()).map(item => [item.machineId, item.thisComputer])).toEqual([['mine', true], ['other', undefined]])
 })

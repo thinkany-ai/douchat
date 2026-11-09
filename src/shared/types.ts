@@ -233,6 +233,8 @@ export interface AglDeviceView extends AglDevice {
   connectionId?: string
   enabled?: boolean
   agentIds: string[]
+  /** This computer itself (its agl machine id), listed first. */
+  thisComputer?: boolean
 }
 
 export interface DiscoveredRemoteAgent {
@@ -884,6 +886,12 @@ export interface DouchatApi extends AccountDataApi, DesktopDeviceApi {
   removeAglDevice: (machineId: string, mode: 'disable-agents' | 'delete-agents') => Promise<AglDeviceView[]>
   discoverAglAgents: (machineId: string) => Promise<AglDeviceAgent[]>
   addAglAgents: (machineId: string, agents: Array<{ id: string; name: string }>) => Promise<LocalAgent[]>
+  /** agl on this computer (desktop app only; macOS and Linux). */
+  getAglStatus?: () => Promise<import('./agl').AglStatusView>
+  checkAglUpdates?: () => Promise<import('./agl').AglStatusView>
+  getAglSettings?: () => Promise<import('./agl').AglSettings>
+  saveAglSettings?: (settings: Partial<import('./agl').AglSettings>) => Promise<import('./agl').AglSettings>
+  onAglStatus?: (listener: (status: import('./agl').AglStatusView) => void) => () => void
   removeCustomLocalAgent: (id: string) => Promise<LocalAgent[]>
   getAttachmentData: (attachmentId: string) => Promise<string>
   getSnapshot: () => Promise<AppSnapshot>
