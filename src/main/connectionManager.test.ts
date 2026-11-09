@@ -122,6 +122,28 @@ describe('connections per account', () => {
   })
 })
 
+describe('agl devices', () => {
+  it('shows a device only to its account, checks it through the agl backend and revokes it on removal', async () => {
+    const store = new ConnectionStore(join(directory, 'connections.json'))
+    const backend = { check: vi.fn(async () => 7), revoke: vi.fn(async () => {}) }
+    const manager = new ConnectionManager(store, async () => [], async () => { throw new Error('never over SSH') })
+    manager.setAglBackend(backend)
+    const device = await store.saveAgl({ name: 'Studio', agl: { machineId: 'mac-1', serviceUrl: 'https://douchat.ai', ownerId: 'alice' } })
+    expect(await manager.list()).toEqual([])
+    await manager.setAccount('alice')
+    expect((await manager.list()).map(item => item.id)).toEqual([device.id])
+    await vi.waitFor(() => expect(manager.status(device.id)).toMatchObject({ state: 'connected', latencyMs: 7 }))
+    backend.check.mockRejectedValueOnce(new Error('Device is offline'))
+    expect(await manager.test(device.id)).toMatchObject({ ok: false, steps: [{ name: 'host', passed: false, message: 'Device is offline' }] })
+    await expect(manager.save({ id: device.id, name: 'x', ssh: { host: 'box' } })).rejects.toThrow('Discover → Devices & Environments')
+    await expect(manager.discover(device.id)).rejects.toThrow('Discover → Devices & Environments')
+    await manager.remove(device.id)
+    expect(backend.revoke).toHaveBeenCalledWith(expect.objectContaining({ id: device.id }))
+    expect(await store.list()).toEqual([])
+    manager.stop()
+  })
+})
+
 describe('agent discovery', () => {
   it('accepts only known CLIs at absolute, normalized paths and trims hostile versions', () => {
     const output = [

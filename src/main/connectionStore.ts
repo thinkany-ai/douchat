@@ -11,6 +11,8 @@ const CONNECTION_ID = /^conn_[0-9a-f]{32}$/
 type SshTarget = NonNullable<RemoteConnection['ssh']>
 const HOST_ID = /^hst_[0-9a-f-]{36}$/
 const OWNER_ID = /^[A-Za-z0-9_-]{1,100}$/
+/** agl machine ids are 1–64 characters (agl's own limit); only safe, printable ones are kept. */
+export const AGL_MACHINE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/
 
 export function sshTargetKey(ssh: SshTarget): string {
   return JSON.stringify([ssh.host.toLowerCase(), ssh.port ?? 22, ssh.user ?? '', ssh.identityFile ?? ''])
@@ -19,8 +21,9 @@ export function sshTargetKey(ssh: SshTarget): string {
 export function legacyTargetId(ssh: SshTarget): string {
   return `ssh-legacy:${createHash('sha256').update(sshTargetKey(ssh)).digest('hex').slice(0, 32)}`
 }
-export function connectionTargetId(connection: Pick<RemoteConnection, 'id'> & { kind?: RemoteConnection['kind']; daemon?: RemoteConnection['daemon'] }): string {
+export function connectionTargetId(connection: Pick<RemoteConnection, 'id'> & { kind?: RemoteConnection['kind']; daemon?: RemoteConnection['daemon']; agl?: RemoteConnection['agl'] }): string {
   // A daemon's folders live on the host and are versioned by its binding (6.5).
+  if (connection.kind === 'agl' && connection.agl) return `agl:${connection.agl.machineId}`
   return connection.kind === 'daemon' && connection.daemon ? `daemon:${connection.daemon.hostId}` : `ssh:${connection.id}`
 }
 
@@ -34,15 +37,33 @@ function validDaemon(value: unknown): RemoteConnection['daemon'] | undefined {
   if (!value || typeof value !== 'object') return undefined
   const item = value as NonNullable<RemoteConnection['daemon']>
   if (typeof item.hostId !== 'string' || !HOST_ID.test(item.hostId) || typeof item.ownerId !== 'string' || !OWNER_ID.test(item.ownerId)) return undefined
-  let serviceUrl: string
-  try {
-    const url = new URL(String(item.serviceUrl))
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) return undefined
-    serviceUrl = url.origin
-  } catch { return undefined }
+  const serviceUrl = validServiceUrl(item.serviceUrl)
+  if (!serviceUrl) return undefined
   const text = (field: unknown) => typeof field === 'string' ? field.replace(/[\0-\x1f\x7f]/g, '').slice(0, 40) : undefined
   const info = item.info && typeof item.info === 'object' ? { os: text(item.info.os), arch: text(item.info.arch), version: text(item.info.version) } : undefined
   return { hostId: item.hostId, serviceUrl, ownerId: item.ownerId, ...(info ? { info } : {}) }
+}
+
+function validServiceUrl(value: unknown): string | undefined {
+  try {
+    const url = new URL(String(value))
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) return undefined
+    return url.origin
+  } catch { return undefined }
+}
+
+/** An agl device: the machine id agl reported, the service it is linked through and the account that linked it. */
+export function validAgl(value: unknown): RemoteConnection['agl'] | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const item = value as NonNullable<RemoteConnection['agl']>
+  if (typeof item.machineId !== 'string' || !AGL_MACHINE_ID.test(item.machineId) || typeof item.ownerId !== 'string' || !OWNER_ID.test(item.ownerId)) return undefined
+  const serviceUrl = validServiceUrl(item.serviceUrl)
+  return serviceUrl ? { machineId: item.machineId, serviceUrl, ownerId: item.ownerId } : undefined
+}
+
+const validName = (value: unknown): string | undefined => {
+  const name = typeof value === 'string' ? value.trim() : ''
+  return name && name.length <= 80 && !/[\0-\x1f\x7f]/.test(name) ? name : undefined
 }
 
 /** Structural validation; the identity file is resolved separately in main. */
@@ -64,6 +85,12 @@ export function validateConnectionInput(input: unknown): RemoteConnectionInput {
 function validConnection(value: unknown): RemoteConnection | undefined {
   if (!value || typeof value !== 'object') return undefined
   const item = value as RemoteConnection
+  if (item.kind === 'agl') {
+    const agl = validAgl(item.agl)
+    const name = validName(item.name)
+    if (!agl || !name || typeof item.id !== 'string' || !CONNECTION_ID.test(item.id)) return undefined
+    return { id: item.id, name, kind: 'agl', enabled: item.enabled !== false, targetRevision: 0, agl, createdAt: Number.isFinite(item.createdAt) ? item.createdAt : 0 }
+  }
   if (item.kind === 'daemon') {
     const daemon = validDaemon(item.daemon)
     const name = typeof item.name === 'string' ? item.name.trim() : ''
@@ -96,7 +123,7 @@ export class ConnectionStore {
   constructor(readonly path: string) {}
 
   async list(): Promise<RemoteConnection[]> {
-    if (this.cache) return this.cache.map(item => ({ ...item, ...(item.ssh ? { ssh: { ...item.ssh } } : {}), ...(item.daemon ? { daemon: { ...item.daemon, ...(item.daemon.info ? { info: { ...item.daemon.info } } : {}) } } : {}) }))
+    if (this.cache) return this.cache.map(item => ({ ...item, ...(item.ssh ? { ssh: { ...item.ssh } } : {}), ...(item.daemon ? { daemon: { ...item.daemon, ...(item.daemon.info ? { info: { ...item.daemon.info } } : {}) } } : {}), ...(item.agl ? { agl: { ...item.agl } } : {}) }))
     let parsed: unknown
     try { parsed = JSON.parse(await readFile(this.path, 'utf8')) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('connections.json could not be read. Restore it or remove it to start over.')
@@ -134,7 +161,7 @@ export class ConnectionStore {
       const index = connections.findIndex(item => item.id === input.id)
       if (index < 0) throw new Error('Connection not found')
       const previous = connections[index]
-      if (previous.kind !== 'ssh' || !previous.ssh) throw new Error('A daemon connection cannot be changed into an SSH connection.')
+      if (previous.kind !== 'ssh' || !previous.ssh) throw new Error(previous.kind === 'agl' ? 'A device cannot be changed into an SSH connection.' : 'A daemon connection cannot be changed into an SSH connection.')
       const moved = sshTargetKey(previous.ssh) !== sshTargetKey(input.ssh)
       connections[index] = { ...previous, name: input.name, ssh: input.ssh,
         targetRevision: previous.targetRevision + (moved ? 1 : 0), ...(moved ? { probe: undefined } : {}) }
@@ -158,6 +185,26 @@ export class ConnectionStore {
       }
       if (connections.length >= 64) throw new Error('Up to 64 connections can be saved.')
       const created: RemoteConnection = { id: `conn_${randomUUID().replaceAll('-', '')}`, name, kind: 'daemon', enabled: true, targetRevision: 0, daemon, createdAt: Date.now() }
+      connections.push(created)
+      return created
+    })
+  }
+
+  /** Saves the connection agents on an agl device run on, or renames it when the device is already saved. */
+  async saveAgl(input: { name: string; agl: NonNullable<RemoteConnection['agl']> }): Promise<RemoteConnection> {
+    const agl = validAgl(input.agl)
+    const name = validName(input.name)
+    if (!agl) throw new Error('Invalid device.')
+    if (!name) throw new Error('Enter a device name of 80 characters or fewer.')
+    return this.mutate(connections => {
+      const existing = connections.find(item => item.kind === 'agl' && item.agl?.machineId === agl.machineId && item.agl.ownerId === agl.ownerId)
+      if (existing) {
+        existing.name = name
+        existing.agl = agl
+        return existing
+      }
+      if (connections.length >= 64) throw new Error('Up to 64 connections can be saved.')
+      const created: RemoteConnection = { id: `conn_${randomUUID().replaceAll('-', '')}`, name, kind: 'agl', enabled: true, targetRevision: 0, agl, createdAt: Date.now() }
       connections.push(created)
       return created
     })
@@ -194,6 +241,8 @@ export class ConnectionStore {
 export function connectionSpec(connection: RemoteConnection, agent: { adapter: RemoteAgentSpec['adapter']; executable: string; args: string[] }): RemoteAgentSpec {
   // Who may call the agent is decided by its permissions, as for agents on this computer.
   const fields = { adapter: agent.adapter, executable: agent.executable, args: [...agent.args] }
+  // agl drives its own agents: there is no shell on the device to run scripts in.
+  if (connection.kind === 'agl') throw new Error('Agents on a device run through agl, not SSH.')
   if (connection.kind === 'daemon') {
     if (!connection.daemon) throw new Error('This douchat-host connection is incomplete. Remove it and add the server again.')
     const { hostId, serviceUrl, ownerId } = connection.daemon

@@ -20,7 +20,16 @@ export interface DaemonBackend {
   revoke(connection: RemoteConnection): Promise<void>
 }
 
+/** What the manager needs for agl devices; they are reached through the Douchat service. */
+export interface AglBackend {
+  /** Resolves when the device is online; rejects with a readable reason otherwise. */
+  check(connection: RemoteConnection): Promise<number>
+  /** Unlinks the device from the account; its next request to the service is refused. */
+  revoke(connection: RemoteConnection): Promise<void>
+}
+
 export function connectionLabel(connection: RemoteConnection): string {
+  if (connection.kind === 'agl') return 'agl'
   if (connection.kind === 'daemon') {
     const info = connection.daemon?.info
     return [info?.os, info?.arch].filter(Boolean).join(' ') || 'douchat-host'
@@ -69,11 +78,13 @@ export class ConnectionManager {
   private readonly listeners = new Set<(id: string, status: ConnectionStatus) => void>()
   private stopped = false
   private daemon?: DaemonBackend
+  private agl?: AglBackend
   /** The signed-in account; '' while signed out. */
   private accountId = ''
   constructor(readonly store: ConnectionStore, private readonly agentsOn: (id: string) => Promise<string[]>, private readonly sshCheck: (connection: RemoteConnection) => Promise<number> = defaultCheck) {}
 
   setDaemonBackend(backend: DaemonBackend): void { this.daemon = backend }
+  setAglBackend(backend: AglBackend): void { this.agl = backend }
 
   /**
    * A douchat-host is bound to the account that added it and works only for
@@ -84,20 +95,27 @@ export class ConnectionManager {
     if (accountId === this.accountId) return
     this.accountId = accountId
     for (const connection of await this.store.list()) {
-      if (connection.kind !== 'daemon') continue
+      if (connection.kind === 'ssh') continue
       if (this.visible(connection) && connection.enabled) void this.refresh(connection.id)
       else { this.clear(connection.id); this.entries.delete(connection.id) }
     }
   }
 
+  /** Hosts and devices belong to the account that added them; SSH connections to this computer. */
   private visible(connection: RemoteConnection): boolean {
+    if (connection.kind === 'agl') return Boolean(this.accountId) && connection.agl?.ownerId === this.accountId
     return connection.kind !== 'daemon' || (Boolean(this.accountId) && connection.daemon?.ownerId === this.accountId)
+  }
+  private aglBackend(): AglBackend {
+    if (!this.agl) throw new Error('Devices are unavailable.')
+    return this.agl
   }
   private daemonBackend(): DaemonBackend {
     if (!this.daemon) throw new Error('Daemon connections are unavailable.')
     return this.daemon
   }
   private check(connection: RemoteConnection): Promise<number> {
+    if (connection.kind === 'agl') return this.aglBackend().check(connection)
     return connection.kind === 'daemon' ? this.daemonBackend().check(connection) : this.sshCheck(connection)
   }
 
@@ -134,7 +152,9 @@ export class ConnectionManager {
 
   async save(input: unknown): Promise<RemoteConnection> {
     const value = validateConnectionInput(input)
-    if (value.id && (await this.store.get(value.id))?.kind === 'daemon') throw new Error('A daemon connection is renamed from its own settings.')
+    const existing = value.id ? await this.store.get(value.id) : undefined
+    if (existing?.kind === 'daemon') throw new Error('A daemon connection is renamed from its own settings.')
+    if (existing?.kind === 'agl') throw new Error('A device is renamed in Discover → Devices & Environments.')
     // Resolve the identity file on this computer; renderer checks are only hints.
     const spec = await validateRemoteSpec({ transport: 'ssh', ...value.ssh, adapter: 'custom', executable: 'true', args: [] })
     const ssh: RemoteConnectionInput['ssh'] = { ...value.ssh, ...(spec.identityFile ? { identityFile: spec.identityFile } : {}) }
@@ -164,6 +184,7 @@ export class ConnectionManager {
     const connection = await this.store.get(id)
     // A daemon is revoked first: removing only the local entry would leave it running.
     if (connection?.kind === 'daemon') await this.daemonBackend().revoke(connection)
+    if (connection?.kind === 'agl') await this.aglBackend().revoke(connection)
     await this.store.remove(id)
     this.clear(id)
     this.entries.delete(id)
@@ -173,6 +194,13 @@ export class ConnectionManager {
   /** Saves a newly enrolled host (or renames a known one) and starts checking it. */
   async saveDaemon(input: Parameters<ConnectionStore['saveDaemon']>[0]): Promise<RemoteConnection> {
     const saved = await this.store.saveDaemon(input)
+    if (saved.enabled) void this.refresh(saved.id)
+    return saved
+  }
+
+  /** Saves the connection of an agl device (or renames it) and starts checking it. */
+  async saveAgl(input: Parameters<ConnectionStore['saveAgl']>[0]): Promise<RemoteConnection> {
+    const saved = await this.store.saveAgl(input)
     if (saved.enabled) void this.refresh(saved.id)
     return saved
   }
@@ -243,6 +271,14 @@ export class ConnectionManager {
     if (!connection.enabled) throw new Error('This connection is turned off.')
     const started = Date.now()
     const steps: ConnectionTestStep[] = []
+    if (connection.kind === 'agl') {
+      // agl runs the agents itself; whether the device is online is the whole test.
+      let ok = true
+      try { await this.aglBackend().check(connection); steps.push({ name: 'host', passed: true }) }
+      catch (error) { ok = false; steps.push({ name: 'host', passed: false, message: error instanceof Error ? error.message : String(error) }) }
+      if (ok) void this.refresh(id)
+      return { ok, steps, durationMs: Date.now() - started }
+    }
     const spec = baseSpec(connection)
     const step = async (name: ConnectionTestStep['name'], work: () => Promise<string | void>): Promise<boolean> => {
       try { const message = await work(); steps.push({ name, passed: true, ...(message ? { message } : {}) }); return true }
@@ -288,6 +324,7 @@ export class ConnectionManager {
     const connection = await this.store.get(id)
     if (!connection) throw new Error('Connection not found')
     if (!connection.enabled) throw new Error('This connection is turned off.')
+    if (connection.kind === 'agl') throw new Error('Scan this device from Discover → Devices & Environments.')
     const output = await remoteCheck(baseSpec(connection), discoverScript(), { signal, timeoutMs: 90_000, maxStdout: 64 * 1024 })
     return parseDiscovery(output.toString('utf8'))
   }
