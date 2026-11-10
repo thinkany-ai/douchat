@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  PROMPT_ARG, REMOTE_BOOTSTRAP, cleanupScript, customRemoteArguments, encodePayload, framesScript, killScript, launchScript,
+  PROMPT_ARG, REMOTE_BOOTSTRAP, beginTurnScript, cleanupScript, customRemoteArguments, encodePayload, framesScript, killScript, launchScript,
   listDirectoriesScript, markPromptArguments, prepareScript, probeScript, resolveDirectoryScript, runDirectory, uploadScript
 } from './remoteScript'
 import { realpath, rename } from 'node:fs/promises'
@@ -44,6 +44,24 @@ describe('bootstrap', () => {
 })
 
 describe('run directory lifecycle', () => {
+  it('prepares a turn in one script, clears only its outbox and rejects linked outboxes', async () => {
+    const runId = randomUUID()
+    expect(remote(prepareScript(runId)).status).toBe(0)
+    const directory = join(home, '.douchat-remote', `t-${runId}`)
+    const outside = join(home, 'project')
+    await mkdir(outside)
+    await writeFile(join(outside, 'keep.txt'), 'keep')
+    await writeFile(join(directory, 'out', 'old.txt'), 'old')
+    await writeFile(join(directory, '.marker'), 'old marker')
+    expect(remote(beginTurnScript(runId)).status).toBe(0)
+    expect(await readFile(join(directory, '.marker'), 'utf8')).toBe('')
+    expect(existsSync(join(directory, 'out', 'old.txt'))).toBe(false)
+    expect(await readFile(join(outside, 'keep.txt'), 'utf8')).toBe('keep')
+    await rm(join(directory, 'out'), { recursive: true })
+    await symlink(outside, join(directory, 'out'))
+    expect(remote(beginTurnScript(runId)).status).not.toBe(0)
+    expect(await readFile(join(outside, 'keep.txt'), 'utf8')).toBe('keep')
+  })
   it('prepares, uploads, launches with the prompt only on stdin, and cleans up', async () => {
     const runId = randomUUID()
     expect(remote(prepareScript(runId)).status).toBe(0)

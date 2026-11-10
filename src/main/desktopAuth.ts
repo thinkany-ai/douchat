@@ -20,6 +20,7 @@ import {
   parseDesktopAuthCallback
 } from './authProtocol'
 import type { DeviceIdentity } from './deviceIdentity'
+import { DEVICE_IDENTITY_REQUIRED } from '../shared/ownerSignature'
 
 interface StoredCredential {
   version: 1
@@ -226,7 +227,7 @@ export class DesktopAuth {
 
   /** Signs owner commands with this session's device key (main process only). */
   signAsDevice(message: string): string {
-    if (!this.getDeviceId()) throw new Error('请重新登录 Douchat 以启用设备身份。')
+    if (!this.getDeviceId()) throw new Error(DEVICE_IDENTITY_REQUIRED)
     return this.device!.sign(message)
   }
 

@@ -88,12 +88,13 @@ export function SettingsPanel({ user, agents, scanning, error, tab, creditsRefre
     const id = agentConnection(agent)
     return id ? [[id, connectionNames[id] || agentServer(agent) || t('Server')] as const] : []
   })).entries()]
-  // The desktop app runs and manages these agents; the web app only uses them
-  // and lists this computer's, as server connections are managed there too.
+  // The desktop app runs and manages its own agents. The web app lists them
+  // (while the desktop is online) next to agents on servers added here.
   const manageable = window.douchat.platform !== 'web'
-  const source = manageable && servers.some(([id]) => id === agentSource) ? agentSource : LOCAL_AGENTS
-  const inSource = (agent: LocalAgent) => (agentConnection(agent) ?? LOCAL_AGENTS) === source
   const countIn = (id: string) => agents.filter((agent) => (agentConnection(agent) ?? LOCAL_AGENTS) === id).length
+  const source = manageable && servers.some(([id]) => id === agentSource) ? agentSource : LOCAL_AGENTS
+  // The desktop app lists one place at a time (its Add and Detect act on it); the web app lists all.
+  const inSource = (agent: LocalAgent) => !manageable || (agentConnection(agent) ?? LOCAL_AGENTS) === source
   const shownAgents = agents.filter(inSource)
   const installed = shownAgents.filter((agent) => agent.installed)
   const desktopOnly = shownAgents.filter((agent) => agent.status === 'desktop-only')
@@ -117,6 +118,8 @@ export function SettingsPanel({ user, agents, scanning, error, tab, creditsRefre
     try { await onRemoveCustom(agent.id) }
     catch (cause) { setCustomError(cause instanceof Error ? cause.message : 'Could not remove custom local agent.') }
   }
+  // The web app has no Detect button: read the list again whenever this page opens.
+  useEffect(() => { if (tab === 'agents' && !manageable) onDetect() }, [tab])
   const [maintaining, setMaintaining] = useState('')
   const refreshAfterTerminal = useRef(false)
   useEffect(() => {
@@ -136,16 +139,17 @@ export function SettingsPanel({ user, agents, scanning, error, tab, creditsRefre
         <span data-agent={agent.id} className={`local-agent-icon ${agent.installed ? 'installed' : ''}`}>{(agent.avatar || agentIcons[agent.remote?.adapter ?? agent.remoteAgent?.adapter ?? agent.id]) ? <img src={agent.avatar || agentIcons[agent.remote?.adapter ?? agent.remoteAgent?.adapter ?? agent.id]} alt="" /> : <Bot size={22} />}{agent.remoteAgent && <RemoteMark />}</span>
         <div className="local-agent-copy">
           <strong>{agent.name}</strong>
-          <code title={agent.remote ? agent.version : agent.path || agent.desktopPath}>{agent.remote ? agent.remote.executable : agent.path || agent.desktopPath || agent.command}</code>
+          <code title={agent.remote ? agent.version : agent.path || agent.desktopPath}>{agent.remote ? agent.remote.executable : agent.remoteAgent?.executable || agent.path || agent.desktopPath || agent.command}</code>
         </div>
         <div className="local-agent-row-aside">
-          {agent.remote && <span className="local-agent-remote-badge" title={agent.version}><Server size={12} />{agentServer(agent)}</span>}
+          {(agent.remote || agent.daemon) && <span className="local-agent-remote-badge" title={agent.version}><Server size={12} />{agentServer(agent)}</span>}
           {agent.unavailable && <span className="local-agent-remote-badge"><Server size={12} />{t(agent.unavailable === 'disabled' ? 'Connection turned off' : 'Connection removed')}</span>}
           {version && !agent.remote && <span className="local-agent-version" title={agent.version}>{version}</span>}
           {agent.installed && !agent.custom && (!agent.updateStatus || agent.updateStatus === 'unknown') && <span className="local-agent-version" title={t('Could not confirm the latest version. Detect again later.')}>{t('Version unconfirmed')}</span>}
           {manageable && (!agent.custom && !agent.unavailable && (!agent.installed || agent.updateStatus === 'available')) && <button type="button" className="secondary-button" title={agent.latestVersion ? tr('Latest version: {version}', { version: agent.latestVersion }) : undefined} disabled={Boolean(maintaining) || scanning} onClick={() => void maintain(agent)}>{t(maintaining === agent.id ? 'Preparing…' : agent.installed ? 'Update' : 'Install')}</button>}
-          {manageable && <button type="button" className="secondary-button" aria-label={`${t('Edit')} ${agent.name}`} onClick={() => setEditingLocalAgent(agent)}>{t('Edit')}</button>}
-          {manageable && agent.custom && <button type="button" className="icon-button local-agent-remove" aria-label={`${t('Remove')} ${agent.name}`} title={t('Remove')} onClick={() => void removeCustom(agent)}><Trash2 size={16} /></button>}
+          {/* An agent configured on a host is changed through its contact, on any device. */}
+          {manageable && !agent.hosted && <button type="button" className="secondary-button" aria-label={`${t('Edit')} ${agent.name}`} onClick={() => setEditingLocalAgent(agent)}>{t('Edit')}</button>}
+          {manageable && agent.custom && !agent.hosted && <button type="button" className="icon-button local-agent-remove" aria-label={`${t('Remove')} ${agent.name}`} title={t('Remove')} onClick={() => void removeCustom(agent)}><Trash2 size={16} /></button>}
         </div>
       </article>
   }
@@ -189,7 +193,7 @@ export function SettingsPanel({ user, agents, scanning, error, tab, creditsRefre
             {servers.map(([id, name]) => <option key={id} value={id}>{name} ({countIn(id)})</option>)}
           </select>}
         </header>
-        {!manageable && <p className="settings-note">{t('These agents run in the desktop app on your computer, and are added and changed there. While it is online, you can use them here.')}</p>}
+        {!manageable && <p className="settings-note">{t('Agents on your computer run in the desktop app and are managed there; you can use them here while it is online. Agents on a server added under Connections → Host run on that server and work here any time.')}</p>}
         {error && <p className="settings-error" role="alert">{t(error)}</p>}
         {maintaining && <p role="status">{t('Preparing to install or update. Downloading the runtime for the first time may take a few minutes.')}</p>}
         {customError && <p className="settings-error" role="alert">{t(customError)}</p>}
@@ -197,7 +201,7 @@ export function SettingsPanel({ user, agents, scanning, error, tab, creditsRefre
           {manageable && <div className="local-agent-heading-actions"><button className="secondary-button" onClick={() => setEditingLocalAgent('new')}><Plus size={15} />{t('Add')}</button>
           <button className="secondary-button" disabled={scanning} onClick={onDetect}>{scanning ? <RefreshCw className="spin" size={15} /> : <ScanSearch size={15} />}{scanning ? t('Detecting…') : t('Detect')}</button></div>}</div>
           {installed.map(row)}
-          {!installed.length && <p className="settings-note">{source !== LOCAL_AGENTS ? t('No agents on this server can run right now.') : scanning ? t('Checking your shell and installed commands…') : t('No supported local agents found. Install one in your terminal, then detect again.')}</p>}
+          {!installed.length && <p className="settings-note">{source !== LOCAL_AGENTS ? t('No agents on this server can run right now.') : !manageable ? t('No agents yet. Add a server under Connections → Host, or open the desktop app to use the agents on your computer.') : scanning ? t('Checking your shell and installed commands…') : t('No supported local agents found. Install one in your terminal, then detect again.')}</p>}
         </section>
         {unavailable.length > 0 && <section aria-label={t('Unavailable server agents')}><h2>{t('Server unavailable')} <span>{unavailable.length}</span></h2>{unavailable.map(row)}</section>}
         {desktopOnly.length > 0 && <section aria-label={t('Desktop apps needing a CLI')}><h2>{t('Desktop app only')} <span>{desktopOnly.length}</span></h2>{desktopOnly.map(row)}</section>}

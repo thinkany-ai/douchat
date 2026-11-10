@@ -1,6 +1,26 @@
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
+let timingLog: DiagnosticLog | undefined
+export function configureTimingLog(log: DiagnosticLog): void { timingLog = log }
+
+/** How long one stage of remote execution took. Only ids and outcomes: never prompts, output or errors. */
+export function recordTiming(stage: string, startedAt: number, context: Record<string, unknown> = {}): void {
+  timingLog?.write('remote.timing', JSON.stringify({ stage, durationMs: Date.now() - startedAt, ...context }))
+}
+
+export async function timedRemote<T>(stage: string, context: Record<string, unknown>, operation: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now()
+  try {
+    const result = await operation()
+    recordTiming(stage, startedAt, { ...context, outcome: 'ok' })
+    return result
+  } catch (error) {
+    recordTiming(stage, startedAt, { ...context, outcome: 'error' })
+    throw error
+  }
+}
+
 /** Best-effort diagnostics: never throw into the UI, retain at most two files. */
 export class DiagnosticLog {
   readonly file: string

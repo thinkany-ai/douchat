@@ -2,9 +2,23 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { DiagnosticLog } from './diagnostics'
+import { configureTimingLog, DiagnosticLog, timedRemote } from './diagnostics'
 
 describe('diagnostic files', () => {
+  it('records stage timings and outcomes without logging operation results or errors', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'douchat-timing-'))
+    try {
+      const log = new DiagnosticLog(directory)
+      configureTimingLog(log)
+      await expect(timedRemote('probe', { runId: 'run-1' }, async () => 'private prompt')).resolves.toBe('private prompt')
+      await expect(timedRemote('prepare', { runId: 'run-1' }, async () => { throw new Error('private credential') })).rejects.toThrow('private credential')
+      const text = readFileSync(log.file, 'utf8')
+      const entries = text.trim().split('\n').map(line => JSON.parse(JSON.parse(line).detail))
+      expect(entries.map(entry => entry.outcome)).toEqual(['ok', 'error'])
+      expect(entries.every(entry => entry.durationMs >= 0 && entry.runId === 'run-1')).toBe(true)
+      expect(text).not.toContain('private')
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
   it('persists errors with timestamps, redacts credentials and rotates the previous file', () => {
     const directory = mkdtempSync(join(tmpdir(), 'douchat-log-'))
     try {

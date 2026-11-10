@@ -8,6 +8,7 @@ const STATE_FILE = join(HOST_HOME, 'state.json')
 /** The local trust anchor (remote-connections.md 6.8.4): never replaced from a server response alone. */
 const TRUST_FILE = join(HOST_HOME, 'trust.json')
 const SEEN_FILE = join(HOST_HOME, 'seen.json')
+const CONFIG_FLOOR_FILE = join(HOST_HOME, 'agents-floor.json')
 
 export interface HostState {
   v: 1
@@ -22,6 +23,8 @@ export interface HostState {
   /** Raw Ed25519 public key in base64url, as registered with the service. */
   signPublicKey: string
   enrolledAt: number
+  /** 'service': it follows the Douchat service (the owner's session) instead of owner-device signatures. */
+  trustMode?: 'owner' | 'service'
 }
 
 export interface TrustedDevice { deviceId: string; publicKey: string }
@@ -49,6 +52,11 @@ export const loadState = (): HostState | undefined => readJson<HostState>(STATE_
 export const saveState = (state: HostState): void => writePrivate(STATE_FILE, state)
 export const loadTrust = (): TrustState | undefined => readJson<TrustState>(TRUST_FILE)
 export const saveTrust = (trust: TrustState): void => writePrivate(TRUST_FILE, trust)
+/** Signing time of the newest owner-signed agent configuration applied (executor.ts). */
+export const configFloor = {
+  load: (): number => Number(readJson<{ issuedAt?: number }>(CONFIG_FLOOR_FILE)?.issuedAt) || 0,
+  save: (issuedAt: number): void => writePrivate(CONFIG_FLOOR_FILE, { issuedAt })
+}
 
 /** Accepted owner requestIds with their expiry, so a signed open runs at most once, even across restarts. */
 export class SeenRequests {

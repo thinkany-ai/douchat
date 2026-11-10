@@ -12,5 +12,5 @@
     "composite": true,
     "noEmit": true
   },
-  "include": ["electron.vite.config.ts", "src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts", "host/src/release.ts"]
+  "include": ["electron.vite.config.ts", "src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts", "host/src/release.ts", "host/src/executor.ts", "host/src/client.ts", "host/src/state.ts", "host/src/verify.ts", "host/src/fingerprint.ts"]
 }

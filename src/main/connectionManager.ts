@@ -160,6 +160,12 @@ export class ConnectionManager {
     return saved
   }
 
+  async setHostExecution(id: string, hostExecution: boolean): Promise<RemoteConnection> {
+    const saved = await this.store.setHostExecution(id, hostExecution)
+    if (saved.enabled) void this.refresh(id)
+    return saved
+  }
+
   async remove(id: string): Promise<void> {
     const connection = await this.store.get(id)
     // A daemon is revoked first: removing only the local entry would leave it running.
@@ -249,6 +255,12 @@ export class ConnectionManager {
       catch (error) { steps.push({ name, passed: false, message: error instanceof Error ? error.message : String(error) }); return false }
     }
     let home = ''
+    // A host that runs its agents itself is checked by the host; nothing runs from here.
+    if (connection.kind === 'daemon' && connection.daemon?.hostExecution) {
+      const ok = await step('host', async () => { await this.daemonBackend().check(connection); return connectionLabel(connection) })
+      if (ok) void this.refresh(id)
+      return { ok, steps, durationMs: Date.now() - started }
+    }
     // douchat-host runs the same checks as SSH once the host is online; only the first step differs.
     const reach = connection.kind === 'daemon'
       ? step('host', async () => { await this.daemonBackend().check(connection); await remoteCheck(spec, 'true\n', { signal, timeoutMs: 30_000 }); return connectionLabel(connection) })
@@ -288,6 +300,8 @@ export class ConnectionManager {
     const connection = await this.store.get(id)
     if (!connection) throw new Error('Connection not found')
     if (!connection.enabled) throw new Error('This connection is turned off.')
+    // A host that runs its agents itself scans its own PATH (host.discover).
+    if (connection.kind === 'daemon' && connection.daemon?.hostExecution) return this.daemonBackend().discover(connection, signal)
     const output = await remoteCheck(baseSpec(connection), discoverScript(), { signal, timeoutMs: 90_000, maxStdout: 64 * 1024 })
     return parseDiscovery(output.toString('utf8'))
   }

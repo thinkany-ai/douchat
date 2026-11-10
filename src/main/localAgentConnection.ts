@@ -7,6 +7,7 @@ import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'n
 import { executableCommand } from './windowsCommand'
 import { randomUUID } from 'node:crypto'
 import { COMPUTER_USE_SERVERS, codexComputerUseInstructions, codexComputerUseInventory } from './codexComputerUse'
+import { timedRemote } from './diagnostics'
 
 /** Process launch description (local executable or the system ssh client). */
 export interface LaunchSpec { file: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string }
@@ -132,7 +133,7 @@ export class LocalAgentConnection {
     this.remote = Boolean(remote)
     // Local: this process spawns the CLI. Remote: the transport's factory does, and owns its ssh process.
     if (this.failure) throw this.failure
-    const child = remote ? await remote.spawn(agentArgs) : spawnOwnedProcess(command!.file, [...command!.prefix, ...agentArgs], { cwd, env, windowsHide: true, shell: false })
+    const child = remote ? await timedRemote('protocol.spawn', { adapter: this.kind }, () => remote.spawn(agentArgs)) : spawnOwnedProcess(command!.file, [...command!.prefix, ...agentArgs], { cwd, env, windowsHide: true, shell: false })
     if (this.failure) { killLocalProcess(child); throw this.failure }
     if (remote) cwd = remote.cwd
     this.child = child
@@ -149,7 +150,9 @@ export class LocalAgentConnection {
     })
     if (this.kind === 'claude' && toolApprovals) await this.request('initialize', { hooks: null }, true)
     if (this.kind === 'codex') {
-      await this.request('initialize', { clientInfo: { name: 'douchat', version: '1.0.0' }, capabilities: { experimentalApi: true } })
+      const initialize = () => this.request('initialize', { clientInfo: { name: 'douchat', version: '1.0.0' }, capabilities: { experimentalApi: true } })
+      if (remote) await timedRemote('protocol.initialize', { adapter: this.kind }, initialize)
+      else await initialize()
       this.write({ method: 'initialized' })
       if (discoveryOnly) return
       const params = {
@@ -164,14 +167,18 @@ export class LocalAgentConnection {
       let response: any
       if (resume?.thread) {
         try {
-          response = await this.request('thread/resume', { ...params, threadId: resume.thread })
+          const resumeThread = () => this.request('thread/resume', { ...params, threadId: resume.thread })
+          response = remote ? await timedRemote('protocol.thread-resume', { adapter: this.kind }, resumeThread) : await resumeThread()
           this.turnCount = response.thread?.turns?.length ? 1 : 0
         } catch (error) {
           if (!/not found|no rollout|does not exist|already has an active writer/i.test(String(error))) throw error
           resume.remember(undefined)
         }
       }
-      response ??= await this.request('thread/start', { ...params, ephemeral: !resume })
+      if (!response) {
+        const startThread = () => this.request('thread/start', { ...params, ephemeral: !resume })
+        response = remote ? await timedRemote('protocol.thread-start', { adapter: this.kind }, startThread) : await startThread()
+      }
       if (typeof response.thread?.id !== 'string') throw new Error('Codex did not return a thread ID')
       this.threadId = response.thread.id
       resume?.remember(this.threadId)

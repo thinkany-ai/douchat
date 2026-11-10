@@ -79,7 +79,10 @@ async function placementOf(definition: CustomLocalAgentDefinition, connections: 
   const connection = connections.find(item => item.id === binding.connectionId)
   if (!connection) return { unavailable: 'missing', connectionId: binding.connectionId }
   if (!connection.enabled) return { unavailable: 'disabled', connectionId: connection.id }
-  // A douchat-host connection runs the agent exactly like SSH: this computer
+  // A host that runs its agents itself takes owner tasks; nothing is launched from here.
+  if (connection.kind === 'daemon' && connection.daemon?.hostExecution)
+    return { daemon: { connectionId: connection.id, hostId: connection.daemon.hostId, label: connection.name }, connection, binding }
+  // Otherwise a douchat-host connection runs the agent exactly like SSH: this computer
   // orchestrates, and only the transport differs (remote/daemonRelay.ts).
   return { spec: connectionSpec(connection, binding), target: placementTarget(definition, connection), connection }
 }
@@ -100,8 +103,10 @@ async function customDefinitions(): Promise<CustomLocalAgentDefinition[]> {
     if (item.remoteAgent) {
       const connection = connections.find(entry => entry.id === item.remoteAgent!.connectionId)
       remoteLabels.set(item.id, connection ? (connection.kind === 'daemon' ? connection.name : connectionLabel(connection)) : 'a removed server')
-      // Daemon agents are no longer host-claimed (P2 relay): they run from here like SSH agents,
-      // so `daemonAgents` stays empty and nothing routes them to a host executor.
+      // Only hosts set to run their agents themselves are host-executed; the others
+      // run from here like SSH agents. Kept while turned off, so they never fall back here.
+      if (connection?.kind === 'daemon' && connection.daemon?.hostExecution)
+        daemonAgents.set(item.id, { connectionId: connection.id, hostId: connection.daemon.hostId, label: connection.name, binding: item.remoteAgent, enabled: connection.enabled })
     }
   }
   return definitions
@@ -120,6 +125,22 @@ export function cachedDaemonAgent(id: string | undefined): { connectionId: strin
 export async function daemonAgentDefinitions(): Promise<Map<string, { connectionId: string; hostId: string; label: string; binding: RemoteAgentBinding; enabled: boolean }>> {
   await customDefinitions()
   return new Map(daemonAgents)
+}
+/** Hosts that agents are bound to on the service (set by the daemon client), for agents set up elsewhere. */
+let hostBindingLookup: (agentId: string) => { hostId: string; label: string } | undefined = () => undefined
+export function setHostBindingLookup(lookup: typeof hostBindingLookup): void { hostBindingLookup = lookup }
+
+/** Fresh lookup of an agent that its douchat-host runs itself (owner tasks).
+ * Throws while that connection is turned off: it must not run anywhere else. */
+export async function hostExecutedAgent(agent: { id: string; localAgentId?: string } | undefined): Promise<{ connectionId?: string; hostId: string; label: string } | undefined> {
+  const id = agent?.localAgentId
+  if (!id || !CUSTOM_ID.test(id)) return undefined
+  await customDefinitions()
+  const daemon = daemonAgents.get(id)
+  // Not in this computer's registry: an agent added on a host from the web app.
+  if (!daemon) return remoteLabels.has(id) ? undefined : hostBindingLookup(agent.id)
+  if (!daemon.enabled) throw new Error('This agent\'s server connection is turned off. Turn it on in Settings → Connections.')
+  return { connectionId: daemon.connectionId, hostId: daemon.hostId, label: daemon.label }
 }
 /** Host label of any agent configured to run on a server, available or not. */
 export function cachedRemoteAgentLabel(id: string | undefined): string | undefined {

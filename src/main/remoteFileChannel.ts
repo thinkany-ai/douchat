@@ -4,10 +4,11 @@ import type { MessageAttachment } from '../shared/types'
 import { remoteImageDirectories, runDirectory, SAFE_NAME, assertWorkspaceKey, assertRemoteWorkspacePath, workspacePath, type RemoteWorkspaceRef } from './remoteScript'
 import type { RemoteTransport } from './remote/sshTransport'
 import { assertUuid } from './remoteValidate'
+import { ATTACHMENT_LIMITS } from '../shared/attachments'
 
 export interface Frame { name: string; data: Buffer }
 export interface FrameLimits { maxFiles: number; maxFileBytes: number; maxTotalBytes: number }
-export const IMAGE_LIMITS: FrameLimits = { maxFiles: 4, maxFileBytes: 8 * 1024 * 1024, maxTotalBytes: 20 * 1024 * 1024 }
+export const IMAGE_LIMITS: FrameLimits = { maxFiles: ATTACHMENT_LIMITS.count, maxFileBytes: ATTACHMENT_LIMITS.imageBytes, maxTotalBytes: ATTACHMENT_LIMITS.totalBytes }
 export const OUTBOX_LIMITS: FrameLimits = { maxFiles: 10, maxFileBytes: 20 * 1024 * 1024, maxTotalBytes: 50 * 1024 * 1024 }
 export const REPLY_LIMITS: FrameLimits = { maxFiles: 1, maxFileBytes: 8 * 1024 * 1024, maxTotalBytes: 8 * 1024 * 1024 }
 

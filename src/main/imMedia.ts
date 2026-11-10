@@ -1,9 +1,10 @@
 import { createDecipheriv } from 'node:crypto'
 import type { MessageImageInput } from '../shared/types'
+import { ATTACHMENT_LIMITS } from '../shared/attachments'
 
 export type IMReplyPart = string | { image: { name: string; mimeType: string; data: Uint8Array } }
 export interface IMMedia { name: string; data: Uint8Array; image: boolean }
-export const MAX_IM_FILE_BYTES = 20 * 1024 * 1024
+export const MAX_IM_FILE_BYTES = ATTACHMENT_LIMITS.totalBytes
 export class IMMediaError extends Error {}
 export function mediaName(name: unknown): string {
   let safe = (typeof name === 'string' ? name.split(/[\\/]/).pop()! : 'attachment')
@@ -18,7 +19,7 @@ export function imageInput(media: IMMedia): MessageImageInput {
     : /^GIF8[79]a$/.test(b.subarray(0, 6).toString()) ? 'image/gif'
     : b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP' ? 'image/webp' : undefined
   if (!mimeType) throw new IMMediaError('暂不支持这种图片格式，请转成 PNG、JPEG、WebP 或 GIF 后重发，或作为文件发送。')
-  if (b.length > 8 * 1024 * 1024) throw new IMMediaError('图片超过 8 MB，请压缩后重发，或作为文件发送。')
+  if (b.length > ATTACHMENT_LIMITS.imageBytes) throw new IMMediaError('图片超过 8 MB，请压缩后重发，或作为文件发送。')
   return { name: mediaName(media.name), mimeType, data: media.data }
 }
 export async function downloadMedia(request: typeof fetch, url: string, signal: AbortSignal, headers?: HeadersInit, inspect?: (response: Response) => void): Promise<Uint8Array> {

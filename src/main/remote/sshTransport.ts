@@ -3,12 +3,13 @@ import type { AgentTool } from '@earendil-works/pi-agent-core'
 import type { RemoteAgentSpec, RemoteDirectoryListing } from '../../shared/types'
 import { closeRemoteConnections, probeRemoteAgent, remoteCheck, remoteExec, remoteLaunch, spawnLaunch, type RemoteExecOptions, type RemoteExecResult } from '../remoteTransport'
 import {
-  cleanupScript, clearOutboxScript, framesScript, killScript, launchScript, markerScript, prepareScript, runFileScript, uploadScript,
+  beginTurnScript, cleanupScript, framesScript, killScript, launchScript, prepareScript, runFileScript, uploadScript,
   type FramesScriptOptions, type LaunchScriptOptions, type RemoteWorkspaceRef
 } from '../remoteScript'
 import { listRemoteDirectories, resolveRemoteWorkspace } from '../remoteWorkspace'
 import { openDaemonSkillBridge, openRemoteSkillBridge, type SkillBridge } from '../remoteSkillBridge'
 import { relaySpawn } from './daemonRelay'
+import { timedRemote } from '../diagnostics'
 
 export type ProbedSpec = RemoteAgentSpec & { remotePath: string; remoteHome: string }
 
@@ -46,18 +47,17 @@ class SshTransport implements RemoteTransport {
   exec(script: string, options?: RemoteExecOptions): Promise<RemoteExecResult> { return remoteExec(this.spec, script, options) }
   check(script: string, options?: RemoteExecOptions): Promise<Buffer> { return remoteCheck(this.spec, script, options) }
   async prepareRun(runId: string, workspace: RemoteWorkspaceRef, signal?: AbortSignal): Promise<void> {
-    await this.check(prepareScript(runId, workspace), { signal, timeoutMs: 30_000 })
+    await timedRemote('prepare', { runId, transport: this.kind }, () => this.check(prepareScript(runId, workspace), { signal, timeoutMs: 30_000 }))
   }
   async upload(runId: string, name: string, data: Uint8Array, signal?: AbortSignal): Promise<void> {
     const output = await this.check(uploadScript(runId, name, data.byteLength), { input: data, signal, timeoutMs: 120_000, maxStdout: 64 })
     if (output.toString('utf8').trim() !== String(data.byteLength)) throw new Error('Remote upload was incomplete')
   }
   async beginTurn(runId: string, signal?: AbortSignal): Promise<void> {
-    await this.check(markerScript(runId), { signal, timeoutMs: 15_000 })
-    await this.check(clearOutboxScript(runId), { signal, timeoutMs: 15_000 })
+    await timedRemote('turn.prepare', { runId, transport: this.kind }, () => this.check(beginTurnScript(runId), { signal, timeoutMs: 15_000 }))
   }
   frames(options: FramesScriptOptions, signal: AbortSignal | undefined, maxStdout: number): Promise<RemoteExecResult> {
-    return this.exec(framesScript(options), { signal, timeoutMs: options.listOnly ? 30_000 : 120_000, maxStdout })
+    return timedRemote('files.scan', { transport: this.kind }, () => this.exec(framesScript(options), { signal, timeoutMs: options.listOnly ? 30_000 : 120_000, maxStdout }))
   }
   runFile(runId: string, name: 'reply.txt', maxBytes: number, maxStdout: number, signal?: AbortSignal): Promise<RemoteExecResult> {
     return this.exec(runFileScript(runId, name, maxBytes), { signal, timeoutMs: 60_000, maxStdout })
@@ -80,7 +80,7 @@ class SshTransport implements RemoteTransport {
 /** Probe the server (cached for 10 minutes) and return a transport for it,
  * over ssh or douchat-host as the spec says. */
 export async function openSshTransport(spec: RemoteAgentSpec, signal?: AbortSignal, fresh = false): Promise<RemoteTransport> {
-  return new SshTransport(await probeRemoteAgent(spec, signal, fresh))
+  return new SshTransport(await timedRemote('probe', { transport: spec.transport }, () => probeRemoteAgent(spec, signal, fresh)))
 }
 /** A transport over settings that were already probed. */
 export function sshTransport(spec: ProbedSpec): RemoteTransport { return new SshTransport(spec) }

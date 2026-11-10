@@ -24,6 +24,11 @@ import { siteOrigin } from './site'
 import { WebSocial } from './webSocial'
 import { BUILT_IN_PRODUCTS, parseProducts } from '../shared/products'
 import { canRunCloudGroup, runCloudGroupRound, sendToCloudGroup } from './cloudGroup'
+import type { HostTaskState } from '../shared/hostTask'
+import { HostAgents, hostActivity, sendToHostAgent, type SocialCall } from './hostChat'
+import { forgetActiveDevice, loginProofs, signOwnerCommand } from './webDevice'
+import { WEB_HOST_PREFIX, WebHosts } from './webHosts'
+import type { PermissionApproval, PermissionRequest } from '../shared/agentPermissions'
 import { WebSync, type Mutation } from './webSync'
 
 /**
@@ -89,11 +94,123 @@ export function createWebApi(): DouchatApi {
   /** Cloud agent replies streaming in this tab, by conversation: a status until
    * the first words arrive, then the reply so far as an ordinary message. */
   const replying = new Map<string, { activity: ConversationActivityState; draft?: ChatMessage }>()
+  /** Owner-task calls on the social channel (host-task-*, executor-list). */
+  const socialCall: SocialCall = (body) => service('/api/desktop-auth/social', { method: 'POST', body: JSON.stringify(body) })
+  /** Agents a douchat-host runs itself; they answer here while no desktop is online. */
+  const hostAgents = new HostAgents(socialCall, () => { refresh(); adoptStrandedRequests() })
+  /** douchat-host servers added here; they follow the service and need no desktop. */
+  const webHosts = new WebHosts(socialCall, () => sync, () => user?.id)
+  const connectionListeners = new Set<() => void>()
+  /** After a change to web-added hosts: the panel reloads and chats see new agents. */
+  const hostsChanged = () => { void hostAgents.refresh(true); for (const listener of connectionListeners) listener() }
+  /** The desktop's connections when it is online, plus the hosts that follow the account. A host
+   * the desktop also lists is shown once, as the account's: it works here without the desktop. */
+  async function connections() {
+    const [desktopList, own] = await Promise.all([desktopOnline() ? desktop<import('../shared/types').ConnectionView[]>('listConnections', []).catch(() => []) : [], webHosts.list()])
+    const shared = new Set(own.map(item => item.daemon?.hostId))
+    return [...desktopList.filter(item => !(item.kind === 'daemon' && shared.has(item.daemon?.hostId))), ...own]
+  }
+  /** The desktop's agents (when online) and those configured on hosts, each once. An agent the
+   * desktop registered for a host that already has the same CLI is the same agent twice. */
+  async function localAgents() {
+    const [desktopAgents, desktopConnections, hosted] = await Promise.all([
+      desktopOnline() ? desktop<import('../shared/types').LocalAgent[]>('detectLocalAgents', []).catch(() => []) : [],
+      desktopOnline() ? desktop<import('../shared/types').ConnectionView[]>('listConnections', []).catch(() => []) : [],
+      webHosts.localAgents()
+    ])
+    const hostOf = new Map(desktopConnections.flatMap(item => item.daemon ? [[item.id, item.daemon.hostId] as const] : []))
+    return [...desktopAgents.filter(agent => !hosted.some(item => item.id === agent.id
+      || (agent.remoteAgent && item.daemon?.hostId === hostOf.get(agent.remoteAgent.connectionId) && item.command === agent.remoteAgent.executable))), ...hosted]
+  }
+  /** Web-added hosts are handled here; everything else by the desktop that added it. */
+  const onConnection = <T>(id: string, local: () => Promise<T>, method: DesktopRpcMethod, args: unknown[]): Promise<T> =>
+    id.startsWith(WEB_HOST_PREFIX) ? local() : desktop<T>(method, args)
+  /** Host tasks this tab waits on, by conversation and agent: for approval cards and stopping. */
+  const hostTasks = new Map<string, HostTaskState & { conversationId: string; agentId: string; agentName: string }>()
+  const trackHostTask = (conversationId: string, agent: AgentConfig, state: HostTaskState | undefined) => {
+    const key = `${conversationId}\n${agent.id}`
+    if (!state || state.status === 'succeeded' || state.status === 'failed') hostTasks.delete(key)
+    else hostTasks.set(key, { ...state, conversationId, agentId: agent.id, agentName: agent.name })
+    refresh()
+  }
+  /** A host's waiting approvals, shown with the desktop's approval card. */
+  const hostApprovals = (): PermissionRequest[] => [...hostTasks.values()].flatMap(task => task.approvals.map((approval): PermissionRequest => {
+    const item = approval as { id: string; capability?: string; taskScope?: string; operation?: string; details?: string; requester?: string; createdAt?: number; expiresAt?: number }
+    const chat = conversation(task.conversationId)
+    return { id: `remote:${item.id}`, ownerId: user?.id ?? '', agentId: task.agentId, agentName: task.agentName, requester: item.requester || task.agentName,
+      roomName: chat?.name ?? '', context: chat?.type === 'group' ? 'group' : 'direct', capability: (item.capability || 'otherTools') as PermissionRequest['capability'],
+      operation: item.operation ?? '', details: item.details ?? '', createdAt: item.createdAt ?? Date.now(), executorLabel: 'Server', ...(item.expiresAt ? { expiresAt: item.expiresAt } : {}), ...(item.taskScope ? { taskScope: item.taskScope } : {}) }
+  }))
+  /** An owner-signed answer from this browser; the host checks it against its own device list. */
+  async function resolveHostApproval(id: string, allow: PermissionApproval): Promise<void> {
+    const approvalId = id.slice('remote:'.length)
+    const task = [...hostTasks.values()].find(item => item.approvals.some(approval => approval.id === approvalId))
+    const content = task?.approvals.find(approval => approval.id === approvalId) as Record<string, unknown> | undefined
+    if (!task || !content || !user) throw new Error('This request was already answered or has expired.')
+    const decision = allow === true || allow === 'task' || allow === 'session' ? 'allow' : 'deny'
+    const scope = allow === 'task' ? 'task' : allow === 'session' ? 'session' : 'once'
+    const hostId = String(content.hostId)
+    const payload = { approvalId, taskId: content.taskId, requestId: content.requestId, paramsHash: content.paramsHash,
+      bindingRevision: content.bindingRevision, claimHash: content.claimHash, decision, scope }
+    // A host added here follows the service; one added on a desktop needs this browser's signature.
+    await socialCall(hostAgents.serviceTrusted(hostId) ? { action: 'task-approval', hostId, payload }
+      : { action: 'task-approval', hostId, signed: await signOwnerCommand({ origin: siteOrigin(), ownerId: user.id, hostId, method: 'task.approval', payload }) })
+    task.approvals = task.approvals.filter(approval => approval.id !== approvalId)
+    refresh()
+  }
+  /** This chat's agents that a douchat-host runs, with the folder chosen for each on its server. */
+  async function hostWorkspaceView(conversationId: string): Promise<import('../shared/types').ConversationWorkspaceView> {
+    await hostAgents.refresh()
+    const chat = conversation(conversationId)
+    const members = (chat?.agentIds ?? []).flatMap((agentId): import('../shared/types').MemberWorkspaceView[] => {
+      const agent = sync?.get<AgentConfig>('agent', agentId)
+      const host = hostAgents.host(agentId)
+      if (!agent || !host || agent.ownerId !== user?.id) return []
+      const saved = chat?.hostWorkspaces?.[agentId]
+      const path = saved?.executionTargetId === `daemon:${host.hostId}` ? saved.path : undefined
+      return [{ agentId, location: 'remote', host: host.name, noTerminal: true, ...(path ? { path, source: 'custom' as const } : { source: 'default' as const }) }]
+    })
+    return { eligible: members.length > 0, members }
+  }
+  async function hostFolderCall(agentId: string, method: 'fs.listDirs' | 'fs.resolveDir', params: Record<string, unknown>): Promise<unknown> {
+    const host = hostAgents.host(agentId)
+    if (!host) throw new Error(DESKTOP_OFFLINE)
+    const result = await socialCall<{ ok?: boolean; pending?: boolean; result?: unknown }>({ action: 'host-control', hostId: host.hostId, method, params })
+    if (result.pending) throw new Error('douchat-host did not answer in time. Check that it is online, then try again.')
+    if (!result.ok) throw new Error((result.result as { message?: string } | null)?.message || 'douchat-host could not open this folder.')
+    return result.result
+  }
+  async function setHostWorkspace(conversationId: string, agentId: string, binding: import('../shared/types').AgentWorkspaceBinding | undefined): Promise<void> {
+    if (!sync) throw new Error('Sign in first.')
+    await sync.mutate([{ kind: 'conversation', id: conversationId, apply: (current) => {
+      if (!current) throw new Error('Chat not found')
+      const next = structuredClone(current) as unknown as Conversation
+      const saved = { ...next.hostWorkspaces }
+      if (binding) saved[agentId] = binding
+      else delete saved[agentId]
+      if (Object.keys(saved).length) next.hostWorkspaces = saved
+      else delete next.hostWorkspaces
+      return next as unknown as SyncRecord
+    } }])
+  }
+  /** Stops this chat's host tasks with an owner-signed cancel. */
+  async function cancelHostTasks(conversationId: string): Promise<void> {
+    if (!user) return
+    for (const task of hostTasks.values()) {
+      if (task.conversationId !== conversationId || !task.hostId || !task.claimHash || task.bindingRevision === undefined) continue
+      const payload = { taskId: task.taskId, bindingRevision: task.bindingRevision, claimHash: task.claimHash }
+      await socialCall(hostAgents.serviceTrusted(task.hostId) ? { action: 'task-cancel', hostId: task.hostId, payload }
+        : { action: 'task-cancel', hostId: task.hostId, signed: await signOwnerCommand({ origin: siteOrigin(), ownerId: user.id, hostId: task.hostId, method: 'task.cancel', payload }) })
+    }
+  }
 
   const setAuth = (state: DesktopAuthState) => { auth = state; for (const listener of authListeners) listener(state) }
   const signOutLocally = () => {
     sync?.stop(); sync = undefined; snapshot = undefined
     social?.stop(); social = undefined
+    hostAgents.clear()
+    hostTasks.clear()
+    forgetActiveDevice()
     token = undefined; user = undefined
     write(TOKEN_KEY); write(USER_KEY)
     setAuth({ status: 'signed-out' })
@@ -120,6 +237,7 @@ export function createWebApi(): DouchatApi {
         }
       }
       social.start()
+      void hostAgents.refresh(true)
     }
     if (!sync) {
       sync = new WebSync(() => token, signOutLocally)
@@ -186,9 +304,12 @@ export function createWebApi(): DouchatApi {
       sessionStorage.removeItem(LOGIN_KEY)
       if (!pending || pending.state !== state) { setAuth({ status: 'error', error: 'Login could not be verified. Try again.' }); return }
       try {
-        const response = await fetch('/api/desktop-auth/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, codeVerifier: pending.verifier, clientId: CLIENT_ID }) })
-        const payload = await response.json().catch(() => null) as { data?: { accessToken?: string; user?: DesktopAuthUser }; message?: string } | null
+        // A device key lets this browser approve what agents on its servers ask for.
+        const device = await loginProofs(code)
+        const response = await fetch('/api/desktop-auth/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, codeVerifier: pending.verifier, clientId: CLIENT_ID, ...(device ? { devices: device.proofs } : {}) }) })
+        const payload = await response.json().catch(() => null) as { data?: { accessToken?: string; user?: DesktopAuthUser; deviceId?: string }; message?: string } | null
         if (!response.ok || !payload?.data?.accessToken || !payload.data.user) throw new Error(payload?.message || 'Login failed. Try again.')
+        await device?.adopt(payload.data.deviceId).catch(() => undefined)
         token = payload.data.accessToken
         user = payload.data.user
         write(TOKEN_KEY, token); write(USER_KEY, JSON.stringify(user))
@@ -256,6 +377,7 @@ export function createWebApi(): DouchatApi {
       routines: (sync?.all<Routine>('routine') ?? []).sort((a, b) => a.nextRunAt - b.nextRunAt),
       runs: [],
       runEvents: [],
+      permissionRequests: hostApprovals(),
       runtime: { mode: 'live', label: 'Douchat Web' },
       endpoint: { baseUrl: '', hasApiKey: false, source: 'account' },
       models: [],
@@ -330,7 +452,24 @@ export function createWebApi(): DouchatApi {
     const target = conversation(conversationId)
     const [syncNow, tokenNow, userNow] = [sync, token, user]
     if (!target || desktopOnline() || !syncNow || !tokenNow || !userNow) return false
+    await hostAgents.refresh()
     const agent = target.type === 'direct' && !target.id.startsWith('im-') ? syncNow.get<AgentConfig>('agent', target.agentIds[0]) : undefined
+    const host = agent && hostAgents.host(agent.id)
+    if (agent && host) {
+      if (replying.has(conversationId)) throw new Error('This conversation is still replying')
+      const startedAt = Date.now()
+      const base: ConversationActivityState = { conversationId, topicId: target.activeTopicId, phase: 'replying', agentIds: [agent.id], label: agent.name, startedAt }
+      replying.set(conversationId, { activity: base })
+      refresh()
+      try {
+        await sendToHostAgent({ sync: syncNow, call: socialCall, user: userNow, agent, host: host.name, conversation: target, text, messageId,
+          onState: (state) => { replying.set(conversationId, { activity: hostActivity(base, state, startedAt) }); trackHostTask(conversationId, agent, state) } })
+      } finally {
+        replying.delete(conversationId)
+        trackHostTask(conversationId, agent, undefined)
+      }
+      return true
+    }
     if (isCloudAgent(agent)) {
       if (replying.has(conversationId)) throw new Error('This conversation is still replying')
       const activity: ConversationActivityState = { conversationId, topicId: target.activeTopicId, phase: 'replying', agentIds: [agent.id], label: agent.name, startedAt: Date.now() }
@@ -351,13 +490,13 @@ export function createWebApi(): DouchatApi {
       for (const post of posts) {
         const group = conversation(post.conversationId)
         if (!group || replying.has(group.id)) continue
-        await answerInGroup(group, (onActivity) => runCloudGroupRound({ sync: syncNow, token: tokenNow, user: userNow, conversation: group, trigger: post, onActivity })).catch(() => undefined)
+        await answerInGroup(group, (onActivity) => runCloudGroupRound({ sync: syncNow, token: tokenNow, user: userNow, conversation: group, trigger: post, onActivity, hosts: { agents: hostAgents, call: socialCall, onState: trackHostTask } })).catch(() => undefined)
       }
       return true
     }
-    if (canRunCloudGroup(syncNow, target)) {
+    if (canRunCloudGroup(syncNow, target, hostAgents)) {
       if (replying.has(conversationId)) throw new Error('This conversation is still replying')
-      await answerInGroup(target, (onActivity) => sendToCloudGroup({ sync: syncNow, token: tokenNow, user: userNow, conversation: target, text, messageId, onActivity }))
+      await answerInGroup(target, (onActivity) => sendToCloudGroup({ sync: syncNow, token: tokenNow, user: userNow, conversation: target, text, messageId, onActivity, hosts: { agents: hostAgents, call: socialCall, onState: trackHostTask } }))
       return true
     }
     return false
@@ -381,7 +520,8 @@ export function createWebApi(): DouchatApi {
     for (const request of sync.all<WebSendRequest>('request')) {
       if (!adoptable(request) || adopting.has(request.id) || replying.has(request.conversationId)) continue
       const target = conversation(request.conversationId)
-      if (!target || target.type === 'direct' && !isCloudAgent(sync.get<AgentConfig>('agent', target.agentIds[0])) || target.type === 'group' && !canRunCloudGroup(sync, target)) continue
+      const direct = target?.type === 'direct' ? sync.get<AgentConfig>('agent', target.agentIds[0]) : undefined
+      if (!target || target.type === 'direct' && !(Boolean(direct && hostAgents.host(direct.id)) || isCloudAgent(direct)) || target.type === 'group' && !canRunCloudGroup(sync, target, hostAgents)) continue
       adopting.add(request.id)
       const tracked = sync
       void (async () => {
@@ -675,7 +815,10 @@ export function createWebApi(): DouchatApi {
       return { snapshot, conversationId: created.id }
     },
     prewarmConversation: async () => undefined,
-    stopConversation: viaDesktop('stopConversation', async () => undefined),
+    stopConversation: viaDesktop('stopConversation', (conversationId) => cancelHostTasks(conversationId)),
+    resolveAgentPermission: (id, allow) => id.startsWith('remote:') && !desktopOnline()
+      ? resolveHostApproval(id, allow).then(() => currentSnapshot())
+      : desktop('resolveAgentPermission', [id, allow]),
 
     // Contacts: a desktop manages every kind; without one, cloud agents are managed here.
     createAgent: viaDesktop('createAgent', async (input) => {
@@ -683,7 +826,13 @@ export function createWebApi(): DouchatApi {
       void greetNewChat(sync!, token!, `direct-${agent.id}`).catch(() => undefined)
       return currentSnapshot()
     }),
-    updateAgent: viaDesktop('updateAgent', async (id, input) => { await updateCloudAgent(sync!, id, input); return currentSnapshot() }),
+    updateAgent: viaDesktop('updateAgent', async (id, input) => {
+      await updateCloudAgent(sync!, id, input)
+      // An agent on a host added here runs with the profile the host was given.
+      const agent = sync!.get<AgentConfig>('agent', id)
+      if (agent && hostAgents.host(agent.id)) await webHosts.agentChanged(agent).catch(() => undefined)
+      return currentSnapshot()
+    }),
     deleteAgent: viaDesktop('deleteAgent', async (id) => { await deleteCloudAgent(sync!, id); return currentSnapshot() }),
     createGroup: viaDesktop('createGroup', async (input) => {
       const group = await createGroup(sync!, user!.id, input)
@@ -702,6 +851,11 @@ export function createWebApi(): DouchatApi {
     getAttachmentData: async (id) => {
       const data = social?.attachmentData(id)
       if (data) return data
+      // An image a douchat-host task delivered: the service keeps it with the task.
+      if (id.startsWith('hosttask:')) {
+        const { attachment } = await socialCall<{ attachment: { mimeType?: string; base64: string } }>({ action: 'host-task-attachment', attachmentId: id })
+        return `data:${attachment.mimeType ?? 'application/octet-stream'};base64,${attachment.base64}`
+      }
       // Images live on the desktop that saved them.
       if (desktopOnline()) return desktop('getAttachmentData', [id])
       throw new Error('Open the Douchat desktop app to see this image.')
@@ -714,18 +868,46 @@ export function createWebApi(): DouchatApi {
     checkForUpdates: async () => ({ status: 'disabled', currentVersion: 'web' }),
     onUpdateState: () => () => undefined,
     onCreditsUpdated: () => () => undefined,
-    onConnectionsChanged: () => () => undefined,
+    onConnectionsChanged: (listener) => { connectionListeners.add(listener); return () => { connectionListeners.delete(listener) } },
     onConnanyChanged: () => () => undefined,
     // The desktop's settings and memory when it is online; empty but usable otherwise.
-    detectLocalAgents: viaDesktop('detectLocalAgents', async () => []),
+    detectLocalAgents: () => localAgents(),
     listSshHosts: viaDesktop('listSshHosts', async () => []),
-    listConnections: viaDesktop('listConnections', async () => []),
+    listConnections: () => connections(),
+    // Adding a server from the web makes one that follows the service and runs its agents itself.
+    createDaemonEnrollment: () => webHosts.createEnrollment(),
+    waitDaemonEnrollment: (id) => webHosts.isEnrollment(id) ? webHosts.waitEnrollment(id) : desktop('waitDaemonEnrollment', [id]),
+    cancelDaemonEnrollment: async (id) => { if (webHosts.isEnrollment(id)) webHosts.cancelEnrollment(id); else await desktop('cancelDaemonEnrollment', [id]) },
+    completeDaemonEnrollment: async (id, input) => {
+      if (!webHosts.isEnrollment(id)) return desktop('completeDaemonEnrollment', [id, input])
+      await webHosts.completeEnrollment(id, input.name)
+      hostsChanged()
+      return connections()
+    },
+    discoverRemoteAgents: (id) => onConnection(id, () => webHosts.discover(id), 'discoverRemoteAgents', [id]),
+    addDiscoveredAgents: (id, agents) => onConnection(id, async () => { const added = await webHosts.addAgents(id, agents); hostsChanged(); return added }, 'addDiscoveredAgents', [id, agents]),
+    setConnectionEnabled: (id, enabled) => onConnection(id, async () => { await webHosts.setEnabled(id, enabled); hostsChanged(); return connections() }, 'setConnectionEnabled', [id, enabled]),
+    removeConnection: (id, mode) => onConnection(id, async () => { await webHosts.remove(id, mode); hostsChanged(); return connections() }, 'removeConnection', [id, mode]),
+    testConnection: (id) => onConnection(id, () => webHosts.test(id), 'testConnection', [id]),
     listRuntimeModels: viaDesktop('listRuntimeModels', async () => ({ models: [], source: 'manual' as const, configurable: false })),
     listIMChannels: viaDesktop('listIMChannels', async () => []),
     getCustomModels: viaDesktop('getCustomModels', async () => ({ providers: [], defaultModel: '' })),
     getDecisionSettings: viaDesktop('getDecisionSettings', async () => DEFAULT_DECISION_SETTINGS),
     getCloudDecisionModels: viaDesktop('getCloudDecisionModels', async () => []),
-    conversationWorkspaces: viaDesktop('conversationWorkspaces', async () => ({ eligible: false, members: [] })),
+    // Folders for agents a host runs are on that server and sync, so the web app can set them too.
+    conversationWorkspaces: viaDesktop('conversationWorkspaces', async (conversationId) => hostWorkspaceView(conversationId)),
+    listRemoteAgentDirectories: viaDesktop('listRemoteAgentDirectories', async (_conversationId, agentId, parent, name) =>
+      hostFolderCall(agentId, 'fs.listDirs', { ...(parent !== undefined ? { parent } : {}), ...(name !== undefined ? { name } : {}) }) as Promise<import('../shared/types').RemoteDirectoryListing>),
+    chooseRemoteAgentWorkspace: viaDesktop('chooseRemoteAgentWorkspace', async (conversationId, agentId, parent, name) => {
+      const host = hostAgents.host(agentId)
+      const { path } = await hostFolderCall(agentId, 'fs.resolveDir', { parent, ...(name !== undefined ? { name } : {}) }) as { path: string }
+      await setHostWorkspace(conversationId, agentId, { path, executionTargetId: `daemon:${host!.hostId}`, targetRevision: 0 })
+      return hostWorkspaceView(conversationId)
+    }),
+    clearAgentWorkspace: viaDesktop('clearAgentWorkspace', async (conversationId, agentId) => {
+      await setHostWorkspace(conversationId, agentId, undefined)
+      return hostWorkspaceView(conversationId)
+    }),
     getCodeArtifact: viaDesktop('getCodeArtifact', async () => null),
     getUserMemory: viaDesktop('getUserMemory', async (agentId) => emptyMemory(user?.id ?? '', agentId ? { agentId } : {})),
     getGroupMemory: viaDesktop('getGroupMemory', async (groupId) => emptyMemory(user?.id ?? '', { groupId })),

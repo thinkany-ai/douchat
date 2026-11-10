@@ -11,6 +11,7 @@ import type { DouchatRuntime } from './runtime'
 import type { SocialAction, SocialAgent, SocialResult, SocialSnapshot, SocialTask, SocialMessage, SocialImage, SocialFile } from '../shared/social'
 import { overlapCursor } from '../shared/social'
 import { checkHumanAgentTargets, privacySafeSocialSnapshot, rendererSocialSnapshot, sharedGroupReplyTargets } from '../shared/socialRules'
+import { ATTACHMENT_LIMITS, isImageMimeType } from '../shared/attachments'
 export { privacySafeSocialSnapshot, rendererSocialSnapshot, sharedGroupReplyTargets }
 
 interface InboxDelivery {
@@ -236,12 +237,12 @@ export class SocialClient {
     const identity = this.identity()
     const conversation = this.store.accountConversations.find((item) => item.id === conversationId)
     if (!conversation?.remoteRoomId || conversation.ownerId !== identity.id) throw new Error('Chat not found')
-    if (!Array.isArray(inputImages ?? []) || (inputImages?.length ?? 0) > 4) throw new Error('Invalid image attachments')
+    if (!Array.isArray(inputImages ?? []) || (inputImages?.length ?? 0) > ATTACHMENT_LIMITS.count) throw new Error('Invalid image attachments')
     let total = 0
     const images = (inputImages ?? []).map((image) => {
-      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mimeType) || !ArrayBuffer.isView(image.data) || !image.data.byteLength || image.data.byteLength > 8 * 1024 * 1024) throw new Error('Invalid image attachment')
+      if (!isImageMimeType(image.mimeType) || !ArrayBuffer.isView(image.data) || !image.data.byteLength || image.data.byteLength > ATTACHMENT_LIMITS.imageBytes) throw new Error('Invalid image attachment')
       total += image.data.byteLength
-      if (total > 20 * 1024 * 1024) throw new Error('Images must total 20 MB or less.')
+      if (total > ATTACHMENT_LIMITS.totalBytes) throw new Error('Images must total 20 MB or less.')
       return { name: image.name, mimeType: image.mimeType, base64: Buffer.from(image.data).toString('base64') }
     })
     const mentionContent = content

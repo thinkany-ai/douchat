@@ -9,5 +9,5 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "../src/main/remote/ownerSigning.ts"]
+  "include": ["src/**/*.ts", "../src/main/remote/ownerSigning.ts", "../src/shared/ownerSignature.ts"]
 }

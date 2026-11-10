@@ -2,7 +2,9 @@ import type { AgentConfig, AgentWorkspaceBinding, Conversation, ExecutionTarget 
 
 type Member = Pick<AgentConfig, 'id' | 'ownerId'>
 type Target = Pick<Conversation, 'type' | 'agentIds' | 'ownerId' | 'remoteRoomId' | 'person' | 'socialRoom'>
-type WorkspaceChat = Target & Pick<Conversation, 'workspacePath' | 'agentWorkspaces'>
+type WorkspaceChat = Target & Pick<Conversation, 'workspacePath' | 'agentWorkspaces' | 'hostWorkspaces'>
+/** Folders on a server a douchat-host runs agents on (target `daemon:<hostId>`). */
+export const isHostTarget = (target: ExecutionTarget): boolean => target.executionTargetId.startsWith('daemon:')
 
 /** The chat-wide folder (legacy) is available only to the owner's agents in private, unshared chats. */
 export function canAssignConversationWorkspace(conversation: Target | undefined, agents: readonly Member[], accountId = conversation?.ownerId): boolean {
@@ -48,7 +50,7 @@ export interface MemberWorkspace {
 /** The one resolution of a member's folder, shared by the UI and the runtime. */
 export function memberWorkspace(conversation: WorkspaceChat | undefined, agent: Member | undefined, target: ExecutionTarget & { location: 'local' | 'remote' }, agents: readonly Member[], accountId = conversation?.ownerId): MemberWorkspace {
   if (!conversation || !agent || !canAssignAgentWorkspace(conversation, agent, accountId)) return { eligible: false }
-  const saved = conversation.agentWorkspaces?.[agent.id]
+  const saved = isHostTarget(target) ? conversation.hostWorkspaces?.[agent.id] : conversation.agentWorkspaces?.[agent.id]
   if (saved && sameExecutionTarget(saved, target)) return { eligible: true, binding: saved }
   const legacyPath = target.location === 'local' && conversation.workspacePath && canAssignConversationWorkspace(conversation, agents, accountId)
     ? conversation.workspacePath : undefined

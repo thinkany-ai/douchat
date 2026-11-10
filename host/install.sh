@@ -21,6 +21,7 @@
 #   DOUCHAT_NODE_MIRROR   Node.js download mirror (default https://nodejs.org/dist)
 #   DOUCHAT_HOST_YES=1    Skip the fingerprint question
 #   DOUCHAT_HOST_SERVICE=background   Do not use systemd or launchd
+#   DOUCHAT_HOST_FORCE=1  Replace a registration with another account instead of refusing
 set -eu
 
 NODE_VERSION="v22.20.0"
@@ -121,7 +122,12 @@ PREVIOUS=""
 mkdir -p "$HOST_HOME/versions/$VERSION"
 mv "$WORK/douchat-host.mjs" "$HOST_HOME/versions/$VERSION/douchat-host.mjs"
 ln -sfn "versions/$VERSION" "$HOST_HOME/current.new"
-mv -f "$HOST_HOME/current.new" "$HOST_HOME/current" 2>/dev/null || { rm -f "$HOST_HOME/current"; mv "$HOST_HOME/current.new" "$HOST_HOME/current"; }
+# Rename the link itself (-T on GNU, -h on BSD). A plain mv follows the old
+# link to its version folder and moves the new link into it, leaving the old version current.
+mv -Tf "$HOST_HOME/current.new" "$HOST_HOME/current" 2>/dev/null \
+  || mv -hf "$HOST_HOME/current.new" "$HOST_HOME/current" 2>/dev/null \
+  || { rm -f "$HOST_HOME/current"; mv "$HOST_HOME/current.new" "$HOST_HOME/current"; }
+[ "$(readlink "$HOST_HOME/current")" = "versions/$VERSION" ] || fail "Could not switch to $VERSION."
 
 cat > "$HOST_HOME/bin/douchat-host.new" <<EOF
 #!/bin/sh
@@ -143,7 +149,8 @@ for dir in "$HOST_HOME"/versions/*; do
 done
 
 if [ -n "${DOUCHAT_ENROLL:-}" ]; then
-  "$BIN" setup --force || fail "Registration failed."
+  # Reuses this server's registration for the same account; DOUCHAT_HOST_FORCE=1 replaces it.
+  "$BIN" setup ${DOUCHAT_HOST_FORCE:+--force} || fail "Registration failed."
   "$BIN" service install || fail "douchat-host was registered but the service did not start. Run: $BIN doctor"
 elif [ -f "$HOST_HOME/state.json" ]; then
   if "$BIN" service status | grep -q '^no service installed'; then "$BIN" service install
