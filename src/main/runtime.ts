@@ -102,7 +102,7 @@ import {
   type GroupReply,
   type GroupTurn
 } from '../shared/bot/group'
-import { addressesEveryone, mentionedMembers, resolveMentionedMembers } from '../shared/bot/mentions'
+import { addressesEveryone, mentionedMembers, mentionOnlyFilter, resolveMentionedMembers } from '../shared/bot/mentions'
 import { botReplyPrompt, splitBotReply } from '../shared/bot/messages'
 import { directReplyPrompt, privateReplyDeliveries, type PrivateDelivery } from '../shared/bot/privateMessages'
 import type { ComputerProvider } from './computer'
@@ -375,6 +375,14 @@ interface SharedCaller {
   delegate: (agentId: string, content: string) => Promise<void>
   signal?: AbortSignal
 }
+/** Shares an own group on the chat service and posts in a group as an agent (main/social.ts). */
+export interface GroupRoomBridge {
+  /** Signed in to Douchat. Signed out (offline mode), groups still run here. */
+  available: () => boolean
+  link: (conversationId: string) => Promise<string>
+  post: (roomId: string, localId: string, content: string, agentIds: string[]) => Promise<void>
+}
+
 export class DouchatRuntime {
   readonly games: GroupGames
   private readonly groupDecisionService = new GroupDecisionService()
@@ -413,6 +421,9 @@ export class DouchatRuntime {
   private readonly permissions = new AgentPermissionBroker(() => this.store.currentAccountId, () => this.emit())
   resolveAgentPermission(id: string, allow: import('../shared/agentPermissions').PermissionApproval): void { this.permissions.resolve(id, allow) }
 
+  private groupRooms?: GroupRoomBridge
+  /** Every group runs on the chat service; these share a group and post in it as an agent. */
+  setGroupRooms(bridge: GroupRoomBridge): void { this.groupRooms = bridge }
   private humanSender?: (conversationId: string, text: string, images?: MessageImageInput[], files?: MessageFileInput[], mentions?: SelectedMention[]) => Promise<void>
   setHumanSender(sender: (conversationId: string, text: string, images?: MessageImageInput[], files?: MessageFileInput[], mentions?: SelectedMention[]) => Promise<void>): void {
     this.humanSender = sender
@@ -1449,15 +1460,22 @@ export class DouchatRuntime {
   }
 
   private groupMessagingTools(config: AgentConfig, sessionKey = config.id): AgentTool[] {
+    void sessionKey
+    const owner = this.store.currentAccountId
+    // Own groups with this agent (shared on first post) and shared groups it was added to.
     const groups = (): Conversation[] => this.store.accountConversations.filter((conversation) =>
-      conversation.type === 'group' && !conversation.remoteRoomId && conversation.agentIds.includes(config.id))
+      conversation.type === 'group' && (conversation.socialRoom
+        ? conversation.socialRoom.agents.some(agent => agent.ownerId === owner && agent.localId === config.id)
+        : !conversation.remoteRoomId && conversation.ownerId === owner && conversation.agentIds.includes(config.id)))
+    const members = (group: Conversation): { id: string; name: string }[] => group.socialRoom
+      ? group.socialRoom.agents.map(agent => ({ id: agent.id, name: agent.name }))
+      : group.agentIds.map(id => ({ id, name: this.store.agent(id)?.name ?? id }))
     const list: AgentTool = {
       name: 'list_groups', label: 'List group chats',
-      description: 'Find local group chats you belong to, including their exact IDs, names and members. Use before posting to an uncertain group target.',
+      description: 'Find group chats you belong to, including their exact IDs, names and members. Use before posting to an uncertain group target.',
       parameters: Type.Object({}),
       execute: async () => ({ content: [{ type: 'text' as const, text: JSON.stringify(groups().map((group) => ({
-        id: group.id, name: group.name, createdAt: group.createdAt,
-        members: group.agentIds.map((id) => ({ id, name: this.store.agent(id)?.name }))
+        id: group.id, name: group.name, createdAt: group.createdAt, members: members(group)
       }))) }], details: {} })
     }
     const parameters = Type.Object({
@@ -1466,29 +1484,24 @@ export class DouchatRuntime {
     })
     const send: AgentTool<typeof parameters> = {
       name: 'send_group_message', label: 'Send group message',
-      description: 'Post a real public message in a local group as yourself. This is group delivery, not a private message to an individual member. All group members can see the message.',
+      description: 'Post a real public message in a group as yourself. This is group delivery, not a private message to an individual member. All group members can see the message, and the members you @mention answer it.',
       parameters,
-      execute: async (toolCallId, params) => {
+      execute: async (_toolCallId, params) => {
         const matches = groups().filter((group) => group.id === params.group || group.name === params.group)
         const group = matches.length === 1 ? matches[0] : undefined
         if (!group || !params.message.trim() || params.message.length > 16000) {
           return { content: [{ type: 'text' as const, text: 'Message not sent. Choose one exact group you belong to using list_groups and provide a nonempty message up to 16000 characters.' }], details: { delivered: false } }
         }
         if (config.ownerId !== this.store.currentAccountId) throw new Error('Account changed')
-        const id = `${group.id}:${config.id}:tool:${toolCallId}`
-        const topicId = this.store.activeTopicId(group.id)
-        const recipients = (addressesEveryone(params.message) ? this.group(group).members : mentionedMembers(params.message, this.group(group).members)).filter((member) => member.id !== config.id)
-        if (recipients.length && this.aborts.has(group.id)) throw new Error('The group is still replying. Try again after it finishes.')
-        if (!this.store.topicMessages(group.id, topicId).some((message) => message.id === id)) {
-          const posted = this.store.addMessage({ id, conversationId: group.id, topicId, authorId: config.id,
-            authorName: config.name, text: params.message.trim(), kind: 'message', recipients })
-          const runId = this.activeRun.get(sessionKey)
-          if (recipients.length && runId) this.pendingGroupPosts.set(runId, [...(this.pendingGroupPosts.get(runId) ?? []), posted])
-          this.store.addUnread(group.id, 1)
-        }
+        if (!this.groupRooms) throw new Error('Sign in to Douchat to post in groups.')
+        const roomId = group.remoteRoomId ?? await this.groupRooms.link(group.id)
+        const roster = this.store.conversation(group.id)?.socialRoom?.agents.map(agent => ({ id: agent.id, name: agent.name })) ?? members(group)
+        const recipients = addressesEveryone(params.message) ? roster : mentionedMembers(params.message, roster)
+        await this.groupRooms.post(roomId, config.id, params.message.trim(), recipients.map(member => member.id))
         this.emit()
-        return { content: [{ type: 'text' as const, text: `Posted your message publicly in “${group.name}”.` }],
-          details: { delivered: true, conversationId: group.id, messageId: id } }
+        const others = recipients.filter(member => member.name !== config.name)
+        return { content: [{ type: 'text' as const, text: `Posted your message publicly in “${group.name}”.` + (others.length ? ` ${others.map(member => member.name).join(', ')} will answer there.` : '') }],
+          details: { delivered: true, conversationId: group.id } }
       }
     }
     return [list, send as AgentTool]
@@ -2929,7 +2942,9 @@ export class DouchatRuntime {
         total += file.data.byteLength
         if (total > MAX_IM_FILE_BYTES) throw new Error('附件总大小不能超过 20 MB。')
       }
-      if (conversation.remoteRoomId) {
+      // Every group runs on the chat service: an own group is shared on its first message.
+      if (!conversation.remoteRoomId && conversation.type === 'group' && this.groupRooms?.available()) await this.groupRooms.link(conversationId)
+      if (conversation.remoteRoomId || this.store.conversation(conversationId)?.remoteRoomId) {
         if (!this.humanSender) throw new Error('Remote chat unavailable')
         await this.humanSender(conversationId, text, images, files, mentions)
         return
@@ -3474,6 +3489,22 @@ export class DouchatRuntime {
     resume?: GroupWorkflow
   ): Promise<string | undefined> {
     const group = structuredClone(resume?.group ?? this.group(conversation, user.text))
+    // Mention-only members answer only a message that @mentions them; the
+    // scheduler picks among the rest by what the message is about.
+    let keepsLead = false
+    if (!resume) {
+      const answering = new Set(mentionOnlyFilter(group.members, conversation.mentionOnlyAgentIds ?? [], user.text, user.recipients).map(member => member.id))
+      if (answering.size < group.members.length) {
+        group.members = group.members.filter(member => answering.has(member.id))
+        members = members.filter(member => answering.has(member.id))
+        if (group.leadMemberId && !answering.has(group.leadMemberId)) {
+          // The saved lead keeps its role; a stand-in for this message is not saved.
+          group.leadMemberId = undefined
+          keepsLead = true
+        }
+        if (!group.members.length) return undefined
+      }
+    }
     const savedSettings = structuredClone(resume?.decisionSettings ?? this.store.decisionSettings())
     const settings = this.cloudGateway ? desktopDecisionSettings(savedSettings) : savedSettings
     const history = resume?.history ?? this.groupMessages(conversation.id, topicId).filter((message) => message.id !== user.id)
@@ -3857,7 +3888,7 @@ export class DouchatRuntime {
           coordinator = groupLeadMember(group)
           workflow.lastLeaderMemberId = decision.leaderMemberId
           this.store.saveGroupWorkflow(workflow)
-          if (this.store.currentAccountId === workflow.ownerId && changed) {
+          if (this.store.currentAccountId === workflow.ownerId && changed && !keepsLead) {
             this.store.updateConversation(conversation.id, { leadAgentId: decision.leaderMemberId })
             this.store.addRunEvent({ runId, type: 'status', label: context.recovery ? 'Leader takeover' : 'Leader elected', detail: coordinator!.name })
           }

@@ -180,6 +180,9 @@ export interface Conversation {
   agentIds: string[]
   /** The visible member that opens and consolidates a group conversation. */
   leadAgentId?: string
+  /** Agents the group owner set to reply only when @mentioned. The others
+   *  join in on their own when a message is about them. */
+  mentionOnlyAgentIds?: string[]
   topics: Topic[]
   activeTopicId: string
   /** User-selected folder for local CLI agents. Used only while every member is the owner's local agent. */

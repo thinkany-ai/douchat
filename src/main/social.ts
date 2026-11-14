@@ -96,6 +96,35 @@ export class SocialClient {
     return payload.data as T
   }
   async snapshot(): Promise<SocialSnapshot> { return privacySafeSocialSnapshot(await this.request()) }
+
+  /**
+   * Every group runs on the chat service: an own group becomes a shared room
+   * (same id on every device) with its agents and their mention-only settings.
+   * Idempotent; the service decides who answers each message.
+   */
+  async ensureGroupRoom(conversationId: string): Promise<string> {
+    const conversation = this.store.accountConversations.find(item => item.id === conversationId)
+    if (!conversation || conversation.type !== 'group') throw new Error('Chat not found')
+    if (conversation.remoteRoomId) return conversation.remoteRoomId
+    const result = await this.action({ action: 'invite-members', conversationId, friendIds: [], agentIds: [] }) as { roomId: string; snapshot?: SocialSnapshot }
+    const quiet = new Set(conversation.mentionOnlyAgentIds ?? [])
+    if (quiet.size) {
+      const identity = this.identity()
+      const room = result.snapshot?.rooms.find(entry => entry.id === result.roomId)
+      for (const agent of room?.agents ?? []) {
+        if (agent.ownerId === identity.id && quiet.has(agent.localId))
+          await this.request({ action: 'set-agent-mode', roomId: result.roomId, agentId: agent.id, mentionOnly: true }, identity).catch(() => undefined)
+      }
+    }
+    return result.roomId
+  }
+
+  /** One of this account's agents posts in a group as itself; the agents it mentions answer there. */
+  async postAsAgent(roomId: string, localId: string, content: string, agentIds: string[]): Promise<void> {
+    await this.request({ action: 'agent-post', roomId, localId, id: randomUUID(), content, agentIds })
+    await this.refreshRoom(roomId)
+  }
+
   async resetConversationContext(conversationId: string): Promise<void> {
     const identity = this.identity()
     const conversation = this.store.accountConversations.find(item => item.id === conversationId)
