@@ -1472,8 +1472,15 @@ describe('DouchatRuntime', () => {
     if (scenario === 'failed') expect(store.topicMessages('direct-lin', store.activeTopicId('direct-lin')).at(-1)).toMatchObject({ error: 'Unavailable', source: { id: 'dobi', content: 'Private request' } })
   })
 
-  it('posts an introduction in the selected group, not another member private inbox', async () => {
+  it('posts an introduction in the selected group on the chat service, not another member private inbox', async () => {
     const { store, runtime } = createRuntime()
+    const linked: string[] = []
+    const posts: [string, string, string, string[]][] = []
+    runtime.setGroupRooms({
+      available: () => true,
+      link: async (conversationId) => { linked.push(conversationId); return `room-${conversationId}` },
+      post: async (roomId, localId, content, agentIds) => { posts.push([roomId, localId, content, agentIds]) }
+    })
     const tools = (runtime as unknown as { groupMessagingTools: (config: unknown) => AgentManagementToolLike[] }).groupMessagingTools(store.agent('dobi')!)
     const list = await tools.find((tool) => tool.name === 'list_groups')!.execute('list', {})
     expect(list.content[0].text).toContain('crew')
@@ -1482,47 +1489,58 @@ describe('DouchatRuntime', () => {
     const text = '大家好，我是 Dobi，拉这个群是为了大家一起聊天。'
     const result = await send.execute('introduction', { group: 'crew', message: text })
     expect(result.details).toMatchObject({ delivered: true, conversationId: 'crew' })
-    expect(store.topicMessages('crew', store.activeTopicId('crew')).at(-1)).toMatchObject({ authorId: 'dobi', text })
+    // The group is shared first, then the agent posts in it as itself.
+    expect(linked).toEqual(['crew'])
+    expect(posts).toEqual([['room-crew', 'dobi', text, []]])
     expect(store.topicMessages('direct-lin', store.activeTopicId('direct-lin'))).toEqual(before)
-    await send.execute('introduction', { group: 'crew', message: text })
-    expect(store.topicMessages('crew', store.activeTopicId('crew')).filter((message) => message.text === text)).toHaveLength(1)
     const invalid = await send.execute('bad', { group: 'direct-lin', message: text })
     expect(invalid.details.delivered).toBe(false)
     const excluded = store.createGroup({ name: 'Other group', agentIds: ['lin'] })
     expect((await send.execute('outsider', { group: excluded.id, message: text })).details.delivered).toBe(false)
   })
 
-  it('dispatches tool-posted group mentions without requiring another human message', async () => {
+  it('hands tool-posted group mentions to the chat service instead of running the group here', async () => {
     const { store, runtime } = createRuntime()
+    const posts: [string, string, string, string[]][] = []
+    runtime.setGroupRooms({
+      available: () => true,
+      link: async (conversationId) => `room-${conversationId}`,
+      post: async (roomId, localId, content, agentIds) => { posts.push([roomId, localId, content, agentIds]) }
+    })
     const internals = runtime as unknown as {
       activeRun: Map<string, string>
       groupMessagingTools: (config: unknown) => AgentManagementToolLike[]
       runReply: (options: ReplyOptions) => Promise<{ text: string }>
     }
     const calls: string[] = []
-    internals.runReply = async ({ config, context, prompt }) => {
-      if (context === 'controller') {
-        const p = JSON.parse(prompt.slice(prompt.indexOf('{')))
-        return { text: JSON.stringify(p.completedTurns.length ? { mode: 'none', memberIds: [], triggerMessageIds: [] } : { mode: 'single', memberIds: ['lin'], triggerMessageIds: [p.messages.at(-1).id] }) }
-      }
+    internals.runReply = async ({ config, context }) => {
       calls.push(config.id)
-      if (context === 'direct') {
-        internals.activeRun.set(config.id, store.runs.at(-1)!.id)
-        const tool = internals.groupMessagingTools(store.agent(config.id)!).find((item) => item.name === 'send_group_message')!
-        await tool.execute('mention-lin', { group: 'crew', message: '@Lin 请在群里介绍一下自己' })
-        return { text: '已在群里联系 Lin。' }
-      }
-      expect(context).toBe('group')
-      const payload = JSON.parse(prompt.slice(prompt.indexOf('{')))
-      expect(payload.messages.find((item: { content: string }) => item.content.includes('@Lin 请在群里'))).toMatchObject({ role: 'assistant', speakerId: 'dobi' })
-      return { text: '大家好，我是 Lin。' }
+      expect(context).toBe('direct')
+      const tool = internals.groupMessagingTools(store.agent(config.id)!).find((item) => item.name === 'send_group_message')!
+      await tool.execute('mention-lin', { group: 'crew', message: '@Lin 请在群里介绍一下自己' })
+      return { text: '已在群里联系 Lin。' }
     }
     await runtime.sendMessage('direct-dobi', '让 Lin 在群里介绍自己')
-    expect(calls).toEqual(['dobi', 'lin'])
-    const messages = store.topicMessages('crew', store.activeTopicId('crew'))
-    expect(messages.at(-1)).toMatchObject({ authorId: 'lin', text: '大家好，我是 Lin。' })
-    expect(messages.filter((message) => message.text.includes('@Lin 请在群里'))).toHaveLength(1)
+    // Lin answers on the chat service; nothing runs the group on this computer.
+    expect(calls).toEqual(['dobi'])
+    expect(posts).toEqual([['room-crew', 'dobi', '@Lin 请在群里介绍一下自己', ['lin']]])
     expect(runtime.snapshot().activity.some((item) => item.conversationId === 'crew')).toBe(false)
+  })
+
+  it('shares an own group on its first message and sends it through the chat service', async () => {
+    const { store, runtime } = createRuntime()
+    const sent: string[] = []
+    runtime.setGroupRooms({
+      available: () => true,
+      link: async (conversationId) => { store.linkSharedGroup(conversationId, 'room-crew'); return 'room-crew' },
+      post: async () => undefined
+    })
+    runtime.setHumanSender(async (conversationId, text) => { sent.push(`${conversationId}:${text}`) })
+    const internals = runtime as unknown as { runReply: (options: ReplyOptions) => Promise<{ text: string }> }
+    internals.runReply = async () => { throw new Error('the group must not run on this computer') }
+    await runtime.sendMessage('crew', '大家好')
+    expect(store.conversation('crew')?.remoteRoomId).toBe('room-crew')
+    expect(sent).toEqual(['crew:大家好'])
   })
 
   it('opens an empty topic with one proactive greeting', async () => {

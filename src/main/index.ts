@@ -687,6 +687,11 @@ app.whenReady().then(() => {
 
   social = new SocialClient(webAppUrl, auth, store, runtime, scheduleBroadcast)
   runtime.setHumanSender((id, text, images, files, mentions) => social!.sendMessage(id, text, images, files, mentions))
+  runtime.setGroupRooms({
+    available: () => auth!.getState().status === 'signed-in',
+    link: (conversationId) => social!.ensureGroupRoom(conversationId),
+    post: (roomId, localId, content, agentIds) => social!.postAsAgent(roomId, localId, content, agentIds)
+  })
   ipcMain.handle('douchat:social-snapshot', (event) => {
     if (!isDouchatRenderer(event.sender)) throw new Error('Unauthorized')
     return social!.snapshot()
