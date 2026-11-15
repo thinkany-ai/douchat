@@ -37,7 +37,7 @@ function cloud() {
   return { request, records }
 }
 
-it('leaves a request for an agent the service runs through agl unclaimed, and still runs the others', async () => {
+it('leaves a fresh request for an agent the service runs through agl unclaimed, and still runs the others', async () => {
   const server = cloud()
   const directory = mkdtempSync(join(tmpdir(), 'douchat-sync-agl-'))
   const store = new DouchatStore(join(directory, 'douchat.db'))
@@ -51,8 +51,8 @@ it('leaves a request for an agent the service runs through agl unclaimed, and st
   client.skipRequest = request => routed.has(request.conversationId)
   client.start()
   await client.syncNow()
-  const push = (id: string, text: string) => server.request(new URL('https://douchat.test/api/sync'), { method: 'POST', body: JSON.stringify({ action: 'push', ops: [{
-    opId: id, kind: 'request', id, baseRevision: 0, data: { id, conversationId: chat.id, text, createdAt: Date.now(), state: 'pending' } }] }) })
+  const push = (id: string, text: string, createdAt = Date.now()) => server.request(new URL('https://douchat.test/api/sync'), { method: 'POST', body: JSON.stringify({ action: 'push', ops: [{
+    opId: id, kind: 'request', id, baseRevision: 0, data: { id, conversationId: chat.id, text, createdAt, state: 'pending' } }] }) })
 
   routed.add(chat.id)
   await push('req-agl', 'for the server')
@@ -68,4 +68,47 @@ it('leaves a request for an agent the service runs through agl unclaimed, and st
   await client.syncNow()
   await vi.waitFor(() => expect(server.records.get('request/req-local')?.deleted).toBe(true))
   expect(ran).toEqual(['for this desktop'])
+})
+
+function setup() {
+  const server = cloud()
+  const directory = mkdtempSync(join(tmpdir(), 'douchat-sync-agl-'))
+  const store = new DouchatStore(join(directory, 'douchat.db'))
+  store.ensureDefaultCloudContact(ACCOUNT, { provider: 'gateway', model: 'default' })
+  const ran: string[] = []
+  const client = new CloudSyncClient('https://douchat.test', { identity: () => ({ id: ACCOUNT, token: 't' }), invalidateSession: async () => undefined },
+    store.cloudSync, () => undefined, server.request, async (request: WebSendRequest) => { ran.push(request.text) })
+  cleanup.push(() => { client.stop(); store.close(); rmSync(directory, { recursive: true, force: true }) })
+  const chat = store.accountConversations[0]
+  client.skipRequest = request => request.conversationId === chat.id
+  const write = (id: string, revision: number, data: Record<string, unknown>) => server.request(new URL('https://douchat.test/api/sync'), { method: 'POST', body: JSON.stringify({ action: 'push', ops: [{
+    opId: `${id}-${revision}`, kind: 'request', id, baseRevision: revision, data: { id, conversationId: chat.id, ...data } }] }) })
+  return { server, client, ran, write }
+}
+
+it('runs a skipped request here once its grace window ends and the service still has not taken it', async () => {
+  const { server, client, ran, write } = setup()
+  client.start()
+  await client.syncNow()
+  // 29.85 s old: 150 ms of the 30 s window left.
+  await write('req-late', 0, { text: 'nobody took it', createdAt: Date.now() - 29_850, state: 'pending' })
+  await client.syncNow()
+  expect(ran).toEqual([])
+  expect(server.records.get('request/req-late')?.data).toMatchObject({ state: 'pending' })
+  await vi.waitFor(() => expect(ran).toEqual(['nobody took it']), { timeout: 2_000 })
+  await vi.waitFor(() => expect(server.records.get('request/req-late')?.deleted).toBe(true))
+})
+
+it('never runs a skipped request the service claimed within the window, even before this desktop saw the claim', async () => {
+  const { server, client, ran, write } = setup()
+  client.start()
+  await client.syncNow()
+  const createdAt = Date.now() - 29_800
+  await write('req-taken', 0, { text: 'for the server', createdAt, state: 'pending' })
+  await client.syncNow()
+  // The service claims it (revision-checked) and runs it.
+  await write('req-taken', 1, { text: 'for the server', createdAt, state: 'claimed', deviceId: 'agl:m-1', claimedAt: Date.now() })
+  await new Promise(resolve => setTimeout(resolve, 600))
+  expect(ran).toEqual([])
+  expect(server.records.get('request/req-taken')?.data).toMatchObject({ state: 'claimed', deviceId: 'agl:m-1' })
 })

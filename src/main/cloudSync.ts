@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { DESKTOP_PRESENCE_MS, DESKTOP_RPC_TIMEOUT_MS, type DesktopPresence, type DesktopRpcCall } from '../shared/desktopRpc'
 import { ACTIVITY_REFRESH_MS, SYNC_PUSH_ACCEPTS, WEB_REQUEST_TTL_MS, type RoomReadMark, type SupportShare, type SyncedActivity, type SyncChange, type SyncOp, type SyncPushResult, type SyncRecord, type WebSendRequest } from '../shared/cloudSync'
 import type { CloudSyncStore } from './cloudSyncStore'
+import { AGL_GRACE_MS, AglGraceWindows } from './agl/aglGrace'
 
 /** What the sync client needs from the signed-in session. */
 export interface CloudSyncAuth {
@@ -52,8 +53,14 @@ export class CloudSyncClient {
   private latestRoomReads: RoomReadMark[] = []
   /** Another client read a shared room further than this desktop has. */
   onRoomRead?: (mark: RoomReadMark) => boolean
-  /** A request the service runs itself (an agent bound to agl on this computer): never claimed here. */
+  /**
+   * A request the service runs itself (an agent bound to agl on this computer):
+   * left to it for {@link AGL_GRACE_MS}, then claimed and run here if still pending.
+   */
   skipRequest?: (request: WebSendRequest) => boolean
+  private readonly aglGrace = new AglGraceWindows()
+  /** Skipped requests: the latest change seen for each, and the re-check at the end of its window. */
+  private readonly deferred = new Map<string, { change: SyncChange; timer: ReturnType<typeof setTimeout> }>()
   private activityTimer?: ReturnType<typeof setTimeout>
   private publishing = false
 
@@ -86,6 +93,9 @@ export class CloudSyncClient {
     clearTimeout(this.roomReadTimer)
     this.roomReadTimer = undefined
     this.roomReads.clear()
+    for (const entry of this.deferred.values()) clearTimeout(entry.timer)
+    this.deferred.clear()
+    this.aglGrace.clear()
     this.running?.abort.abort()
     this.running = undefined
     clearInterval(this.pushTimer)
@@ -309,11 +319,30 @@ export class CloudSyncClient {
    * desktop runs it, then send it like a message typed here. The request is
    * deleted once sent, or kept as failed with the reason for the web app.
    */
-  private async handleRequest(running: { ownerId: string; abort: AbortController }, change: SyncChange): Promise<void> {
+  private async handleRequest(running: { ownerId: string; abort: AbortController }, change: SyncChange, recheck = false): Promise<void> {
     const request = change.data as unknown as WebSendRequest | null
-    if (!this.runRequest || change.deleted || !request || request.state !== 'pending' || this.handling.has(change.id)) return
+    const deferred = this.deferred.get(change.id)
+    if (deferred && !recheck) {
+      // Still waiting for the service: keep the newest state for the re-check; done once it is no longer pending.
+      if (change.revision >= deferred.change.revision) deferred.change = change
+      if (change.deleted || request?.state !== 'pending') { clearTimeout(deferred.timer); this.deferred.delete(change.id); this.aglGrace.forget(change.id) }
+      return
+    }
+    if (!this.runRequest || change.deleted || !request || request.state !== 'pending' || this.handling.has(change.id)) { this.aglGrace.forget(change.id); return }
     if (!this.store.hasConversation(running.ownerId, request.conversationId)) return
-    if (this.skipRequest?.(request)) return
+    if (!recheck && this.skipRequest?.(request) && this.aglGrace.waiting(change.id, request.createdAt)) {
+      const timer = setTimeout(() => {
+        const entry = this.deferred.get(change.id)
+        this.deferred.delete(change.id)
+        this.aglGrace.forget(change.id)
+        // The service did not take it in time: claim it here as before (revision-checked, so never twice).
+        if (entry && this.running === running) void this.handleRequest(running, entry.change, true).catch(() => undefined)
+      }, this.aglGrace.remaining(change.id))
+      timer.unref?.()
+      this.deferred.set(change.id, { change, timer })
+      return
+    }
+    this.aglGrace.forget(change.id)
     const write = async (baseRevision: number, data?: WebSendRequest) => (await this.call<{ results: SyncPushResult[] }>(running, {
       action: 'push',
       ops: [{ opId: randomUUID(), kind: 'request', id: change.id, baseRevision, ...(data ? { data: data as unknown as SyncRecord } : { deleted: true }) } satisfies SyncOp]
