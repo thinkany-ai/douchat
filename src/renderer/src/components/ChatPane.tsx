@@ -1,3 +1,4 @@
+import { parseGroupAgentReply } from '../../../shared/groupAgentCalls'
 import type { SelectedMention } from '../../../shared/bot/mentions'
 import { createPortal } from 'react-dom'
 import { legacyGroupNotice } from '../../../shared/groupText'
@@ -1035,7 +1036,7 @@ export const MessageRow = memo(function MessageRow({
       {message.socialTasks && <SocialTaskTyping tasks={message.socialTasks} socialAgents={socialAgents ?? []} agents={agents} />}
     </>)
   }
-  return (
+  return (<>
     <MessageGroupRow
       person={person}
       onOpenPersonProfile={onOpenPersonProfile}
@@ -1048,7 +1049,8 @@ export const MessageRow = memo(function MessageRow({
       showAuthor={showAuthor}
       onOpenAgentProfile={onOpenAgentProfile}
     />
-  )
+    {message.socialTasks && <SocialTaskTyping tasks={message.socialTasks} socialAgents={socialAgents ?? []} agents={agents} />}
+  </>)
 })
 
 /** Whether a system message renders as a failure card (see SystemMessage). */
@@ -1098,38 +1100,14 @@ export function visibleConversationMessages(
   return folded
 }
 
-/** Keep public replies in the transcript, and fold internal invitation bodies
- * into the initiating reply. A page without that reply gets a standalone card. */
+/** Each forwarded request and recipient reply remains a separate public bubble. */
 function groupInvitationMessages(messages: ChatMessage[]): ChatMessage[] {
-  const byId = new Map(messages.map((message) => [message.id, message]))
-  const invitations = new Map<string, MessageDelivery[]>()
-  const folded = new Set<string>()
-  for (const message of messages) {
-    if (!message.id.endsWith(':delegate')) continue
+  return messages.map((message) => {
+    if (message.id.endsWith(':reply') && message.text.includes('[[douchat_call_group_agent]]')) return { ...message, text: parseGroupAgentReply(message.text).reply }
+    if (!message.id.includes(':delegate')) return message
     const taskId = message.id.slice(`${message.conversationId}:`.length)
     const task = message.socialTasks?.find((entry) => entry.id === taskId)
-    if (!task) continue
-    const parentReply = byId.get(`${message.id.slice(0, -':delegate'.length)}:reply`)
-    const recipientReply = byId.get(`${message.id}:reply`)
-    const host = parentReply?.authorId === message.authorId ? parentReply : message
-    const delivery: MessageDelivery = {
-      kind: 'group-invitation', status: task.status,
-      id: message.id, recipientId: task.agentId, recipientName: task.agentName,
-      content: message.text,
-      replies: recipientReply ? [{
-        id: recipientReply.id, senderId: recipientReply.authorId, senderName: recipientReply.authorName,
-        content: recipientReply.text, createdAt: recipientReply.createdAt,
-        attachments: recipientReply.attachments, error: recipientReply.error
-      }] : undefined
-    }
-    invitations.set(host.id, [...(invitations.get(host.id) ?? []), delivery])
-    if (host !== message) folded.add(message.id)
-  }
-  return messages.filter((message) => !folded.has(message.id)).map((message) => {
-    const deliveries = invitations.get(message.id)
-    if (!deliveries) return message
-    return { ...message, text: message.id.endsWith(':delegate') ? '' : message.text,
-      deliveries: [...(message.deliveries ?? []), ...deliveries] }
+    return task ? { ...message, text: `@${task.agentName} ${message.text}` } : message
   })
 }
 

@@ -133,3 +133,18 @@ export function resolveMentionedMembers<T extends BotMember>(content: string, me
   if (typed.some(member => members.filter(other => normalizeName(other.name) === normalizeName(member.name)).length > 1)) throw new Error('This mention matches multiple members. Use a unique member name or select a task recipient.')
   return [...new Map([...selected, ...typed].map(member => [member.id, member])).values()]
 }
+
+/** The members that may answer a group message: everyone allowed to join in
+ *  on their own, plus the mention-only members it @mentions (or @everyone). */
+export function mentionOnlyFilter<T extends BotMember>(
+  members: T[],
+  mentionOnly: string[],
+  content: string,
+  recipients?: { id: string }[]
+): T[] {
+  if (!mentionOnly.length) return members
+  const quiet = new Set(mentionOnly)
+  const addressed = new Set((recipients ?? []).map(item => item.id))
+  for (const member of addressesEveryone(content) ? members : mentionedMembers(content, members)) addressed.add(member.id)
+  return members.filter(member => !quiet.has(member.id) || addressed.has(member.id))
+}

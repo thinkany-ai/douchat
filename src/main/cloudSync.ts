@@ -237,8 +237,12 @@ export class CloudSyncClient {
         await this.serial(() => this.pull(running))
         await this.serial(() => this.push(running))
         for (;;) {
-          const watched = await this.call<{ changed: boolean }>(running, { action: 'watch', after: this.store.cursor(running.ownerId) }, 40_000)
-          if (watched.changed) await this.serial(() => this.pull(running))
+          const watched = await this.call<{ changed: boolean; cursor?: number }>(running, { action: 'watch', after: this.store.cursor(running.ownerId) }, 40_000)
+          const rewound = Number.isSafeInteger(watched.cursor) && watched.cursor! >= 0 && watched.cursor! < this.store.cursor(running.ownerId)
+          if (watched.changed || rewound) await this.serial(async () => {
+            if (rewound) this.store.rewindCursor(running.ownerId)
+            await this.pull(running)
+          })
         }
       } catch {
         if (this.running !== running) return

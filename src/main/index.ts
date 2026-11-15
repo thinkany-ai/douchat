@@ -853,6 +853,11 @@ app.whenReady().then(async () => {
   cloudSync.skipRequest = (request) => aglBinder.routesConversation(request.conversationId)
   if (socialAccountId) cloudSync.start()
   runtime.setHumanSender((id, text, images, files, mentions) => social!.sendMessage(id, text, images, files, mentions))
+  runtime.setGroupRooms({
+    available: () => auth!.getState().status === 'signed-in',
+    link: (conversationId) => social!.ensureGroupRoom(conversationId),
+    post: (roomId, localId, content, agentIds) => social!.postAsAgent(roomId, localId, content, agentIds)
+  })
   // douchat-host connections: enrollment and status here; agents on them run from this
   // computer like SSH agents, with the relay carrying their scripts (remote/daemonRelay.ts).
   daemon = new DaemonClient(webAppUrl, auth, store, connections, () => runtime.remoteChanged())
