@@ -919,16 +919,26 @@ function AgentPresence({ agent }: { agent?: SocialAgent }): ReactElement | null 
   const label = agent.onlineUntil === undefined ? '状态未知' : online ? '在线' : '离线'
   return <span className={`mention-presence${online ? ' is-online' : ''}`} role="img" aria-label={label} title={label} />
 }
-function SocialTaskStatus({ tasks, agents }: { tasks: NonNullable<ChatMessage['socialTasks']>; agents: SocialAgent[] }): ReactElement | null {
+/**
+ * Replies still owed by agents in a shared room. Like a local agent that is
+ * typing, each one shows as the agent's avatar with a loading bubble below the
+ * message; why it is waiting (owner offline, approval) stays in the tooltip.
+ */
+function SocialTaskTyping({ tasks, socialAgents, agents }: { tasks: NonNullable<ChatMessage['socialTasks']>; socialAgents: SocialAgent[]; agents: AgentConfig[] }): ReactElement | null {
   const time = usePresenceTime()
   const pending = tasks.filter((task) => task.status === 'pending' || task.status === 'running')
   if (!pending.length) return null
-  return <div className="social-task-status" role="status">{pending.map((task) => {
-    const agent = agents.find((entry) => entry.id === task.agentId)
-    const offline = agent?.onlineUntil !== undefined && agent.onlineUntil <= time
-    const status = task.status === 'pending' ? offline ? '等待主人设备上线，上线后处理' : '等待接单' : offline ? '设备连接已中断，等待恢复' : agent?.approvalTaskId === task.id ? '等待主人确认' : '处理中'
-    return <small key={task.id}>{task.agentName} · {status}</small>
-  })}</div>
+  return <>{pending.map((task) => {
+    const social = socialAgents.find((entry) => entry.id === task.agentId)
+    const offline = social?.onlineUntil !== undefined && social.onlineUntil <= time
+    const status = task.status === 'pending' ? offline ? '等待主人设备上线，上线后处理' : '等待接单' : offline ? '设备连接已中断，等待恢复' : social?.approvalTaskId === task.id ? '等待主人确认' : '处理中'
+    const avatar = agents.find((entry) => entry.id === task.agentId) ?? ({ ...social, id: task.agentId, name: social?.name ?? task.agentName } as unknown as AgentConfig)
+    const label = `${task.agentName} · ${status}`
+    return <div className="typing-row social-task-typing" key={task.id} data-status={task.status}>
+      <AgentAvatar agent={avatar} size={36} />
+      <span className="typing-bubble" role="status" aria-label={label} title={label}><i /><i /><i /></span>
+    </div>
+  })}</>
 }
 
 // Memoized so composer state (every keystroke of the draft) does not re-render
@@ -988,14 +998,13 @@ export const MessageRow = memo(function MessageRow({
       wecom: { name: t('WeCom'), icon: 'wecom.png' },
       telegram: { name: 'Telegram', icon: 'telegram.svg' }
     }[message.sourceChannel]
-    return (
+    return (<>
       <div className="message-row user-message-row">
         {channel && <span className="message-channel-badge" role="img" aria-label={tr('Sent via {channel}', { channel: channel.name })} title={tr('Sent via {channel}', { channel: channel.name })}>
           <img src={`./channels/${channel.icon}`} alt="" />
         </span>}
         <div className={`message-bubble user-bubble ${hasAttachments ? 'has-attachments' : ''} ${!message.text && hasAttachments ? 'image-only' : ''}`}>
           {message.text && <UserMessageText text={message.text} attachments={quoteImages} />}
-          {message.socialTasks && <SocialTaskStatus tasks={message.socialTasks} agents={socialAgents ?? []} />}
           {message.deliveryState && <small className="message-delivery-state" role="status">{message.deliveryState === 'sending' ? '发送中…' : message.deliveryState === 'confirming' ? '已发送，正在同步接单状态…' : '发送未确认，请在队列中重试'}</small>}
           <MessageAttachments attachments={ownImages} />
         </div>
@@ -1023,7 +1032,8 @@ export const MessageRow = memo(function MessageRow({
           />
         )}
       </div>
-    )
+      {message.socialTasks && <SocialTaskTyping tasks={message.socialTasks} socialAgents={socialAgents ?? []} agents={agents} />}
+    </>)
   }
   return (
     <MessageGroupRow

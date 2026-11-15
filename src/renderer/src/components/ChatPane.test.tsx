@@ -164,19 +164,23 @@ describe('private delivery disclosure', () => {
     container.remove()
   })
 
-  it('shows offline and approval waits and clears them after completion', async () => {
+  it('shows a pending social reply as the agent avatar with a loading bubble, not text in the bubble', async () => {
     const task = { id: 'task', agentId: 'peer', agentName: 'Peer', status: 'pending' }
-    const peer = { id: 'peer', localId: 'local', ownerId: 'bob', name: 'Peer', onlineUntil: 0, approvalTaskId: 'task' }
+    const peer = { id: 'peer', localId: 'local', ownerId: 'bob', name: 'Peer', avatarEmoji: '🦊', onlineUntil: 0, approvalTaskId: 'task' }
     const render = async () => act(async () => root.render(<MessageRow messages={[{ ...incomingReply, authorId: 'user', socialTasks: [task] }]} socialAgents={[peer]} agents={[]} relatedMessages={[]} userName="You" userAvatar="" showAuthor={false} />))
     await render()
-    expect(container.textContent).toContain('等待主人设备上线')
+    expect(container.querySelector('.user-bubble')?.textContent).not.toContain('Peer')
+    const row = container.querySelector('.social-task-typing')
+    expect(row?.querySelector('[data-testid="agent-avatar"]')?.getAttribute('data-agent-name')).toBe('Peer')
+    expect(row?.querySelectorAll('.typing-bubble i')).toHaveLength(3)
+    expect(row?.querySelector('.typing-bubble')?.getAttribute('aria-label')).toContain('等待主人设备上线')
     peer.onlineUntil = Date.now() + 45000
     task.status = 'running'
     await render()
-    expect(container.textContent).toContain('等待主人确认')
+    expect(container.querySelector('.social-task-typing .typing-bubble')?.getAttribute('aria-label')).toContain('等待主人确认')
     task.status = 'succeeded'
     await render()
-    expect(container.querySelector('.social-task-status')).toBeNull()
+    expect(container.querySelector('.social-task-typing')).toBeNull()
   })
 
   it('renders received IM file links through the file-chip renderer', async () => {
