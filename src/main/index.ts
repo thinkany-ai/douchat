@@ -62,7 +62,7 @@ import { LocalComputerProvider } from './computer'
 import { DouchatRuntime } from './runtime'
 import { RoutineScheduler } from './scheduler'
 import { DouchatStore } from './store'
-import { addCustomLocalAgent, configureAglDetection, aglAgentPlacement, agentsOnConnection, hasRemoteAgent, configureLocalAgentRegistry, connectionRegistry, detectLocalAgents, remoteAgentPlacement, removeAgentsOnConnection, removeCustomLocalAgent, setConnectionAccount, updateLocalAgent, validateLocalAgent } from './localAgents'
+import { addCustomLocalAgent, configureAglDetection, aglAgentPlacement, agentsOnConnection, hasRemoteAgent, configureLocalAgentRegistry, connectionRegistry, detectLocalAgents, localAgentCatalog, remoteAgentPlacement, removeAgentsOnConnection, removeCustomLocalAgent, setConnectionAccount, updateLocalAgent, validateLocalAgent } from './localAgents'
 import { ConnectionManager } from './connectionManager'
 import { migrateConnections, skippedMigrationAgents } from './connectionStore'
 import { migrateWorkspaceTargets } from './workspaceMigration'
@@ -83,7 +83,7 @@ import { listRemoteDirectories, remoteTerminalArgs, resolveRemoteWorkspace } fro
 import { remoteHostLabel } from './remoteValidate'
 import { probeRemoteAgent } from './remoteTransport'
 import { configureDaemonRelay } from './remote/daemonRelay'
-import { socialRequest } from './remote/socialRequest'
+import { socialIdentity, socialRequest } from './remote/socialRequest'
 import { AglHub } from './agl/aglHub'
 import { AglExecutor, routingExecutor } from './agl/aglExecutor'
 import { AglDevices, aglAdapter, aglTargetOf, validMachineId } from './agl/aglDevices'
@@ -94,6 +94,8 @@ import { aglLocalFiles, bundledAglPath, connectAgl, fileExists, installAglBinary
 import { AglLocalExecutor, aglLocalRouting, readCodexGeneratedImage, type AglLocalClient } from './agl/aglLocalExecutor'
 import { codexComputerUseInstructions } from './codexComputerUse'
 import { douchatHubLink } from './agl/aglStatus'
+import { AglBinder } from './agl/aglBinding'
+import { aglEnabled } from '../shared/agl'
 import { AglAgentCatalog } from './agl/aglAgents'
 import { desktopAgentExecutor } from './desktopAgentExecutor'
 import { canAssignAgentWorkspace, canAssignConversationWorkspace, memberWorkspace, ownMemberAgentIds } from '../shared/conversationWorkspace'
@@ -262,8 +264,8 @@ const aglLifecycle = new AglLifecycle({
   // Douchat's managed npm prefix and Node runtime, where it installs agent CLIs.
   extraPaths: managedSearchPaths, ownedRoot: join(app.getPath('userData'), 'local-tools'),
   serviceStartCommand: () => serviceStartCommand(), log: (event, detail) => diagnostics.write(event, detail ?? ''),
-  // Nothing in ~/.agl changes until the user agrees (the one-time card in Devices and Settings → Agents).
-  consented: () => aglSettingsStore.get().enabled === true
+  // Silent: on unless the user turned agl off in Settings → Agents.
+  consented: () => aglEnabled(aglSettingsStore.get())
 })
 aglLifecycle.setHubUrls([...aglHubUrls])
 const signedInAccount = (): string | undefined => {
@@ -284,8 +286,22 @@ const thisComputer = new ThisComputerLinker({
   rememberLinkedAccount: account => aglSettingsStore.setLinkedAccount(account),
   listedForAccount: async machineId => (await aglDevices.devices(true)).some(device => device.machineId === machineId),
   linked: () => notifyWindows(BrowserWindow.getAllWindows(), 'douchat:connections-changed'),
+  beforeUnlink: () => aglBinder.unbind('unlink'),
   log: (event, detail) => diagnostics.write(event, detail ?? '')
 })
+// Agents agl can run here are bound to this machine on the service, which then runs their turns from other devices.
+const aglBinder = new AglBinder({
+  platform: process.platform, lifecycle: aglLifecycle, settings: () => aglSettingsStore.get(),
+  identity: () => { try { return auth ? socialIdentity(auth) : undefined } catch { return undefined } },
+  post: (identity, body) => socialRequest(webAppUrl, auth, body, undefined, identity),
+  agents: () => store?.accountAgents ?? [],
+  localAgents: () => detectLocalAgents({ version: async () => undefined }),
+  catalogCommands: Object.fromEntries(localAgentCatalog.map(([id, , command]) => [id, command])),
+  aglAgents: () => aglAgents.agents(),
+  cwd: async () => { const directory = join(app.getPath('userData'), 'local-workspaces', 'agl'); mkdirSync(directory, { recursive: true, mode: 0o700 }); return directory },
+  log: (event, detail) => diagnostics.write(event, detail ?? '')
+})
+aglBinder.start()
 // Experimental, off by default: detection and model lists of the agents agl supports come from agl.
 const aglAgents = new AglAgentCatalog(() => aglLifecycle.client())
 function useAglForLocalAgents(on: boolean): void {
@@ -302,7 +318,7 @@ aglLifecycle.onStatus((view) => {
 // Experimental, with "Use agl for local agents": Codex runs through the agl daemon on this computer.
 const aglLocalExecutor = new AglLocalExecutor({
   platform: process.platform,
-  enabled: () => { const settings = aglSettingsStore.get(); return settings.enabled === true && settings.useForLocalAgents },
+  enabled: () => { const settings = aglSettingsStore.get(); return aglEnabled(settings) && settings.useForLocalAgents },
   // connectAgl made it: the vendored AglClient, which also subscribes and delivers events.
   client: () => aglLifecycle.client() as AglLocalClient | undefined,
   agents: () => aglAgents.agents(),
@@ -430,6 +446,7 @@ function broadcast(snapshot: AppSnapshot): void {
     powerSaveBlocker.stop(localWorkBlocker)
     localWorkBlocker = undefined
   }
+  aglBinder.agentsChanged(snapshot.agents)
   snapshotPublisher.publish(BrowserWindow.getAllWindows().flatMap((window) => window.isDestroyed() ? [] : [window.webContents]), snapshot)
   // The web app shows the same "replying…" state as these windows.
   cloudSync?.publishActivity(snapshot.activity)
@@ -485,6 +502,8 @@ function broadcastAuth(state: DesktopAuthState): void {
     void connections.setAccount(nextSocialAccount).then(() => notifyWindows(BrowserWindow.getAllWindows(), 'douchat:connections-changed'))
     if (nextSocialAccount) { social?.start(); daemon?.start(); cloudSync?.start(); aglLifecycle.start(); void thisComputer.maybeLink() }
     else { social?.stop(); daemon?.stop(); cloudSync?.stop() }
+    // The previous account's bindings go; the new account's agents are bound once linked for it.
+    void aglBinder.sync()
   }
   let welcomeConversationId: string | undefined
   let builtInRefresh: Promise<string | undefined> = Promise.resolve(undefined)
@@ -811,6 +830,8 @@ app.whenReady().then(async () => {
   }, new DeviceIdentity(join(app.getPath('userData'), 'device.json'), safeStorage))
 
   social = new SocialClient(webAppUrl, auth, store, runtime, scheduleBroadcast)
+  // Agents the service runs through agl on this computer: their room tasks are never claimed here.
+  social.setAglAgents(() => aglBinder.routedAgents())
   // Every account record lives in the cloud; this computer keeps a synced copy.
   cloudSync = new CloudSyncClient(webAppUrl, {
     identity: () => {
@@ -829,6 +850,7 @@ app.whenReady().then(async () => {
     return result
   }, hostname())
   cloudSync.onRoomRead = (mark) => store.applyRoomRead(mark)
+  cloudSync.skipRequest = (request) => aglBinder.routesConversation(request.conversationId)
   if (socialAccountId) cloudSync.start()
   runtime.setHumanSender((id, text, images, files, mentions) => social!.sendMessage(id, text, images, files, mentions))
   // douchat-host connections: enrollment and status here; agents on them run from this
@@ -886,7 +908,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('douchat:start-login', () => auth.startLogin())
   ipcMain.handle('douchat:cancel-login', () => auth.cancelLogin())
   ipcMain.handle('douchat:retry-auth', () => auth.initialize())
-  ipcMain.handle('douchat:sign-out', () => auth.signOut())
+  // The agl bindings go while the session still works; signing out never waits long for it.
+  ipcMain.handle('douchat:sign-out', async () => { await Promise.race([aglBinder.unbind('sign-out'), new Promise(resolve => setTimeout(resolve, 3_000))]); return auth.signOut() })
   ipcMain.handle('douchat:refresh-profile', () => auth.refreshProfile())
   ipcMain.handle('douchat:update-profile', (_event, input: UpdateDesktopProfileInput) => auth.updateProfile(input))
   ipcMain.handle('douchat:get-usage-summary', () => auth.getUsageSummary())
@@ -1128,6 +1151,7 @@ app.whenReady().then(async () => {
       // Removing this computer is a choice: stop linking it again, and drop agl's now revoked link.
       await aglSettingsStore.save({ autoLink: false })
       const link = douchatHubLink(aglLifecycle.lastStatus() ?? { hubs: [] }, [...aglHubUrls])
+      await aglBinder.unbind('removed')
       if (link) await aglLifecycle.disconnectHub(link.url).then(() => aglSettingsStore.setLinkedAccount(undefined)).catch(error => diagnostics.write('agl.disconnect-failed', String(error)))
     }
     connectionChanged(); scheduleBroadcast()
@@ -1150,11 +1174,11 @@ app.whenReady().then(async () => {
     const before = aglSettingsStore.get()
     const next = await aglSettingsStore.save(input)
     if (next.enabled !== before.enabled) {
-      diagnostics.write('agl.consent', next.enabled ? 'enabled' : 'off')
+      diagnostics.write('agl.consent', aglEnabled(next) ? 'enabled' : 'off')
       aglLifecycle.consentChanged()
       aglAgents.invalidate()
     }
-    if ((next.enabled === true && next.useForLocalAgents) !== (before.enabled === true && before.useForLocalAgents)) switchLocalCodexRuntime()
+    if ((aglEnabled(next) && next.useForLocalAgents) !== (aglEnabled(before) && before.useForLocalAgents)) switchLocalCodexRuntime()
     if (next.autoLink && !before.autoLink) void thisComputer.maybeLink()
     if (next.useForLocalAgents !== before.useForLocalAgents) useAglForLocalAgents(next.useForLocalAgents)
     return next
@@ -1852,6 +1876,7 @@ app.on('before-quit', () => {
   computer?.dispose()
   connections.stop()
   // The shared agl daemon keeps running (the service, other apps and the hub use it).
+  aglBinder.dispose()
   aglLifecycle.dispose()
   void closeRemoteConnections()
 })
