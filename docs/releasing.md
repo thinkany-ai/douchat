@@ -53,14 +53,18 @@ The release workflows use these repository secrets:
 
 | Secret | Purpose |
 | --- | --- |
-| `APPLE_CERTIFICATE` | Base64-encoded Developer ID Application `.p12` |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for the certificate archive |
-| `APPLE_ID` | Apple account used for notarization |
-| `APPLE_PASSWORD` | App-specific Apple password |
-| `APPLE_TEAM_ID` | Apple Developer team identifier |
+| `THINKANY_CERTIFICATE` | Base64-encoded ThinkAny Developer ID Application `.p12` |
+| `THINKANY_CERTIFICATE_PASSWORD` | Password for that certificate archive |
+| `THINKANY_API_KEY` | App Store Connect API private key used for notarization |
+| `THINKANY_API_KEY_ID` | API key identifier |
+| `THINKANY_API_ISSUER` | API issuer identifier |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account containing the `douchat` bucket |
 | `R2_ACCESS_KEY_ID` | Bucket-scoped R2 Object Read & Write token id |
 | `R2_SECRET_ACCESS_KEY` | Bucket-scoped R2 token secret |
+
+The `APPLE_*` secrets remain reserved for the legacy Mac update bridge. New
+releases require ThinkAny team `8PL52G56V9` and verify both architectures
+with codesign, stapler and Gatekeeper before uploading artifacts.
 
 Never store these values in `.env`, the builder configuration or Git history.
 The R2 token is restricted to the `douchat` bucket and exists only in GitHub

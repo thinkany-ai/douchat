@@ -129,13 +129,13 @@ jobs:
         if: github.event_name == 'push' && matrix.platform == 'macos'
         shell: bash
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE: ${{ secrets.THINKANY_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.THINKANY_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.THINKANY_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.THINKANY_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.THINKANY_API_ISSUER }}
         run: |
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY_CONTENT APPLE_API_KEY_ID APPLE_API_ISSUER; do
             if [ -z "${!name}" ]; then
               echo "Required release secret is missing: $name" >&2
               exit 1
@@ -146,8 +146,8 @@ jobs:
         if: github.event_name == 'push' && matrix.platform == 'macos'
         shell: bash
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.THINKANY_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.THINKANY_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
           certificate_path="$RUNNER_TEMP/douchat-signing.p12"
@@ -173,14 +173,23 @@ jobs:
         env:
           TARGET_PLATFORM: ${{ matrix.platform }}
           RELEASE_BUILD: ${{ github.event_name == 'push' }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_NAME: ThinkAny, LLC (8PL52G56V9)
+          APPLE_API_KEY_CONTENT: ${{ secrets.THINKANY_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.THINKANY_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.THINKANY_API_ISSUER }}
         run: |
           set -euo pipefail
           case "$TARGET_PLATFORM" in
             macos)
-              if [ "$RELEASE_BUILD" = "true" ]; then npm run release:mac; else npm run package:mac; fi
+              if [ "$RELEASE_BUILD" = "true" ]; then
+                umask 077
+                export APPLE_API_KEY="$RUNNER_TEMP/douchat-notary.p8"
+                trap 'rm -f "$APPLE_API_KEY"' EXIT
+                printf '%s' "$APPLE_API_KEY_CONTENT" > "$APPLE_API_KEY"
+                npm run release:mac
+              else
+                npm run package:mac
+              fi
               ;;
             windows-x64) npm run package:win ;;
             linux-x64)
@@ -252,6 +261,19 @@ jobs:
               find "$extract_dir" -depth -delete
               ;;
           esac
+
+      - name: Verify ThinkAny signing and notarization
+        if: github.event_name == 'push' && matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          for app in "release/$version/mac/Douchat.app" "release/$version/mac-arm64/Douchat.app"; do
+            codesign --verify --deep --strict "$app"
+            codesign -dv --verbose=2 "$app" 2>&1 | grep -F 'TeamIdentifier=8PL52G56V9'
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=2 "$app"
+          done
 
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
