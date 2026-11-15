@@ -122,6 +122,12 @@ export class CloudSyncStore {
       .run(`cloudSync:cursor:${ownerId}`, String(cursor))
   }
 
+  /** A restored development service can have a lower sequence. Re-read its
+   * stream without deleting local records or their pending edits. */
+  rewindCursor(ownerId: string): void {
+    this.setCursor(ownerId, 0)
+  }
+
   /** Queue every record this account has that the cloud has never seen. */
   enqueueUnsynced(ownerId: string): void {
     const ownerOf: Record<SyncKind, string> = {

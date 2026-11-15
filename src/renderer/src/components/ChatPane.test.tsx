@@ -202,44 +202,29 @@ describe('private delivery disclosure', () => {
     expect(container.querySelector('.user-bubble')?.textContent).toBe('hello')
   })
 
-  it('folds external group invitations into the sender reply without hiding public replies', async () => {
+  it('shows each recipient request and reply independently, including legacy invitations', async () => {
     const conversation: Conversation = { ...directConversation, id: 'friend-room', type: 'group',
       socialRoom: { id: 'room', name: 'Group', kind: 'group', members: [], agents: [], createdAt: '' } }
     const sender: ChatMessage = { ...outbound, id: 'friend-room:root:task:grok:reply', conversationId: conversation.id,
       authorId: 'grok', authorName: 'Grok', text: 'Grok reported in.', deliveries: undefined }
-    const request: ChatMessage = { ...sender, id: 'friend-room:root:task:grok:delegate', text: 'Hermes, please report number 3.',
+    const request: ChatMessage = { ...sender, id: 'friend-room:root:task:grok:delegate', text: 'Please report number 3.',
       socialTasks: [{ id: 'root:task:grok:delegate', agentId: 'hermes', agentName: 'Hermes', status: 'succeeded' }] }
     const reply: ChatMessage = { ...sender, id: `${request.id}:reply`, authorId: 'hermes', authorName: 'Hermes', text: '3. Hermes here.' }
-    const raw = [request, sender, reply]
+    const next: ChatMessage = { ...request, id: 'friend-room:root:task:grok:delegate:dobi', text: 'Say hi.',
+      socialTasks: [{ id: 'root:task:grok:delegate:dobi', agentId: 'dobi', agentName: 'Dobi', status: 'running' }] }
+    const raw = [sender, request, next, reply]
     const visible = visibleConversationMessages(conversation, raw)
-    expect(visible.map((message) => message.id)).toEqual([sender.id, reply.id])
-    expect(sender.deliveries).toBeUndefined()
-    expect(request.text).toBe('Hermes, please report number 3.')
-    await act(async () => root.render(<MessageRow messages={[visible[0]]} agents={[]} relatedMessages={raw} userName="You" userAvatar="" showAuthor />))
-    expect(container.textContent).toContain('Grok reported in.')
-    expect(container.textContent).toContain('Invited Hermes to participate')
-    expect(container.textContent).not.toContain(request.text)
-    expect(container.textContent).not.toContain('private message')
-    await act(async () => container.querySelector<HTMLButtonElement>('.bubble-deliveries')?.click())
-    expect(container.textContent).toContain(request.text)
-    expect(container.textContent).toContain('Hermes replied')
-    expect(container.textContent).toContain(reply.text)
-    expect(container.textContent).toContain('Invitation completed')
-
-    // Pending invitations and pages lacking the sender's reply retain a card.
-    const pending = { ...request, socialTasks: [{ ...request.socialTasks![0], status: 'running' }] }
-    const page = visibleConversationMessages(conversation, [pending])
-    expect(page[0].text).toBe('')
-    expect(page[0].deliveries?.[0].content).toBe(request.text)
-    expect(page[0].deliveries?.[0].status).toBe('running')
-    expect(page[0].deliveries?.[0].replies).toBeUndefined()
-
-    // Chained invitations belong to the next agent's own public reply.
-    const next = { ...pending, id: `${request.id}:delegate`, authorId: 'hermes', authorName: 'Hermes', text: 'Dobi, join us.',
-      socialTasks: [{ id: 'root:task:grok:delegate:delegate', agentId: 'dobi', agentName: 'Dobi', status: 'pending' }] }
-    const chain = visibleConversationMessages(conversation, [...raw, next])
-    expect(chain.map((message) => message.id)).toEqual([sender.id, reply.id])
-    expect(chain[1].deliveries?.[0].recipientName).toBe('Dobi')
+    expect(visible.map(message => message.id)).toEqual(raw.map(message => message.id))
+    expect(visible.map(message => message.text)).toEqual(['Grok reported in.', '@Hermes Please report number 3.', '@Dobi Say hi.', '3. Hermes here.'])
+    expect(visible.every(message => !message.deliveries?.length)).toBe(true)
+    expect(request.text).toBe('Please report number 3.')
+    await act(async () => root.render(<MessageRow messages={[visible[2]]} agents={[]} relatedMessages={raw} userName="You" userAvatar="" showAuthor />))
+    expect(container.textContent).toContain('@Dobi Say hi.')
+    expect(container.querySelector('.bubble-deliveries')).toBeNull()
+    expect(container.querySelector('[data-agent-name="Dobi"]')).not.toBeNull()
+    expect(visibleConversationMessages(conversation, [next])[0].text).toBe('@Dobi Say hi.')
+    const legacy = { ...sender, text: 'Hi.[[douchat_call_group_agent]]{"agentId":"dobi"}[[/douchat_call_group_agent]]' }
+    expect(visibleConversationMessages(conversation, [legacy])[0].text).toBe('Hi.')
   })
 
   it('shows a status while a sent message is waiting for the task snapshot', async () => {

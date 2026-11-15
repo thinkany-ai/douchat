@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { addressesEveryone, insertMention, mentionedMembers, mentionQuery } from './mentions'
+import { addressesEveryone, insertMention, mentionedMembers, mentionOnlyFilter, mentionQuery } from './mentions'
 import { BOT_MESSAGE_BREAK, splitBotReply } from './messages'
 import {
   explicitGroupDecision,
@@ -394,5 +394,18 @@ describe('summarizeRuntimeError', () => {
     const { title } = summarizeRuntimeError('x'.repeat(500))
     expect(title.length).toBeLessThanOrEqual(180)
     expect(title.endsWith('…')).toBe(true)
+  })
+})
+
+describe('mention-only group members', () => {
+  const members = [{ id: 'a', name: 'Ann' }, { id: 'b', name: 'Bob' }, { id: 'c', name: 'Cy' }]
+  it('keeps every member when none is mention-only', () => {
+    expect(mentionOnlyFilter(members, [], 'hello', undefined)).toHaveLength(3)
+  })
+  it('drops mention-only members unless the message @mentions them', () => {
+    expect(mentionOnlyFilter(members, ['b'], 'any ideas?').map(m => m.id)).toEqual(['a', 'c'])
+    expect(mentionOnlyFilter(members, ['b'], '@Bob any ideas?').map(m => m.id)).toEqual(['a', 'b', 'c'])
+    expect(mentionOnlyFilter(members, ['b', 'c'], 'hi', [{ id: 'c' }]).map(m => m.id)).toEqual(['a', 'c'])
+    expect(mentionOnlyFilter(members, ['a', 'b', 'c'], '@all status?').map(m => m.id)).toEqual(['a', 'b', 'c'])
   })
 })

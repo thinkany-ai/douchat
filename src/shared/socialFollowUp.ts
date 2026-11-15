@@ -18,7 +18,7 @@ export function socialFollowUpTarget(
   const agentIds = new Set(room.agents.map(agent => agent.id))
   const reset = conversation.topics.find(topic => topic.id === conversation.activeTopicId)?.contextReset
   const lastHuman = history.filter(message =>
-    message.kind === 'message' && !message.id.endsWith(':delegate') && !message.id.endsWith(':reply') &&
+    message.kind === 'message' && !message.id.includes(':delegate') && !message.id.endsWith(':reply') &&
     !agentIds.has(message.authorId) && message.authorId !== 'system'
   ).sort((a, b) => a.createdAt - b.createdAt).at(-1)
   if (!lastHuman || lastHuman.authorId !== 'user' || lastHuman.deliveryState || lastHuman.socialTasks?.length !== 1) return undefined

@@ -354,6 +354,9 @@ export interface Conversation {
   agentIds: string[]
   /** The visible member that opens and consolidates a group conversation. */
   leadAgentId?: string
+  /** Agents the group owner set to reply only when @mentioned. The others
+   *  join in on their own when a message is about them. */
+  mentionOnlyAgentIds?: string[]
   topics: Topic[]
   activeTopicId: string
   /** Earlier single folder for the whole chat. Only a fallback for members running on this computer. */

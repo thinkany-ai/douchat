@@ -50,7 +50,7 @@ function cloud() {
     if (body.action === 'watch' && seq <= body.after) await new Promise((resolve) => setTimeout(resolve, 20))
     return new Response(JSON.stringify({ code: 0, data: handle(body) }))
   }) as unknown as typeof fetch
-  return { request, records }
+  return { request, records, reset: () => { records.clear(); seq = 0 } }
 }
 
 function device(server: ReturnType<typeof cloud>, runRequest?: (request: WebSendRequest) => Promise<void>, runCall?: (call: DesktopRpcCall) => Promise<unknown>) {
@@ -68,6 +68,27 @@ function device(server: ReturnType<typeof cloud>, runRequest?: (request: WebSend
 }
 
 describe('cloud sync between devices', () => {
+  it('resumes mobile requests after a service sequence rollback', async () => {
+    const server = cloud()
+    const ran: string[] = []
+    const a = device(server, async request => { ran.push(request.text) })
+    await a.sync()
+    const chat = a.store.accountConversations[0]
+    // Advance the desktop cursor well beyond a restored service's stream.
+    for (let i = 0; i < 12; i++) {
+      a.store.addMessage({ conversationId: chat.id, topicId: chat.activeTopicId, authorId: 'user', authorName: 'Me', text: `old ${i}`, kind: 'message' })
+    }
+    await a.sync()
+    await a.sync()
+    server.reset()
+    await server.request(new URL('https://douchat.test/api/sync'), { method: 'POST', body: JSON.stringify({ action: 'push', ops: [{
+      opId: 'mobile-after-restore', kind: 'request', id: 'restored-request', baseRevision: 0,
+      data: { id: 'restored-request', conversationId: chat.id, text: 'after restore', createdAt: Date.now(), state: 'pending' }
+    }] }) })
+    await vi.waitFor(() => expect(ran).toEqual(['after restore']), { timeout: 4000 })
+    expect(a.store.conversation(chat.id)).toBeDefined()
+  })
+
   it('shares records, merges concurrent edits and propagates deletes', async () => {
     const server = cloud()
     const a = device(server)
