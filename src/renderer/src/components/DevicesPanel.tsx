@@ -1,12 +1,13 @@
 import { Bot, Check, Copy, Laptop, MoreHorizontal, Plus, RefreshCw, ScanSearch, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import type { AglDeviceAgent, AglDeviceView, AglPairing, ConnectionView, LocalAgent } from '../../../shared/types'
+import { aglEnabled } from '../../../shared/agl'
 import { messageSendError } from '../messageQueue'
 import { t, tr } from '../preferences'
 import { agentIcons } from '../agentIcons'
 import { NativeDialog } from './NativeDialog'
 import { DesktopAppLinks, ServerConnections, useDesktopOnline } from './ConnectionsPanel'
-import { AglConsentCard, AglRelinkButton, aglNeedsRelink, useAgl } from './AglSettingsSection'
+import { AglRelinkButton, aglNeedsRelink, useAgl } from './AglSettingsSection'
 
 export type DevicesTab = 'devices' | 'environments'
 /** How often the add-device dialog looks for the newly linked machine. */
@@ -85,7 +86,7 @@ function DevicesTabPanel({ web, agents, onAgentsChange, onShowAgents }: { web: b
   const desktopOnline = useDesktopOnline(web)
   const agl = useAgl()
   // This computer is not linked (or its link was removed elsewhere): offer to link it again.
-  const relink = !web && agl.settings?.enabled === true && aglNeedsRelink(agl.status)
+  const relink = !web && Boolean(agl.settings && aglEnabled(agl.settings)) && aglNeedsRelink(agl.status)
   const relinked = (): void => { load() }
   const load = useCallback(() => {
     void window.douchat.listAglDevices().then(setDevices, cause => { setDevices(current => current ?? []); setError(messageSendError(cause)) })
@@ -129,7 +130,6 @@ function DevicesTabPanel({ web, agents, onAgentsChange, onShowAgents }: { web: b
       <p className="settings-note">{t('Link any machine to your Douchat account by running one command on it. It connects out to Douchat, so it needs no open port, and Douchat drives the coding agents on it through agl.')}</p>
       <div className="connection-add"><button className="secondary-button" onClick={() => setAdding(true)}><Plus size={15} />{t('Add device')}</button></div>
     </>}
-    {!web && <AglConsentCard status={agl.status} settings={agl.settings} onSave={agl.save} />}
     {error && <p className="settings-error" role="alert">{t(error)}</p>}
     {relink && devices && !devices.some(device => device.thisComputer) && <section aria-label={t('This computer')}><article className="local-agent-row connection-row">
       <span className="local-agent-icon"><Laptop size={20} /></span>

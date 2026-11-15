@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import type { ConnectionEvent } from './aglClient'
-import { AglLifecycle, canApplyUpdates, planDaemon, type AglDaemonConnection, type AglLifecycleOptions } from './aglLifecycle'
+import { aglEnabled } from '../../shared/agl'
+import { AglLifecycle, canApplyUpdates, planDaemon, supportsAppName, type AglDaemonConnection, type AglLifecycleOptions } from './aglLifecycle'
 import type { AglStatusJson } from './aglStatus'
 
 const status = (extra: Partial<AglStatusJson> = {}): AglStatusJson => ({ running: true, service: true, hubs: [], busy: 0, daemonVersion: '0.3.12', ...extra })
@@ -221,6 +222,37 @@ it('links to a hub without logging the code, and leaves Windows and disabled run
     expect(other.commands).toEqual([])
     idle.dispose()
   }
+})
+
+it('links as Douchat with `--app-name` where agl supports it, without it on an older agl', async () => {
+  expect(supportsAppName('0.3.13')).toBe(true)
+  expect(supportsAppName('0.4.0')).toBe(true)
+  expect(supportsAppName('0.3.12')).toBe(false)
+  expect(supportsAppName(undefined)).toBe(false)
+  const newer = fakeAgl({ binary: '0.3.15', running: true, service: true })
+  lifecycle = new AglLifecycle(newer.options())
+  await lifecycle.refresh()
+  await lifecycle.connectHub('https://douchat.ai/agl', 'c0de', { appName: 'Douchat' })
+  expect(newer.commands).toContain('agl connect https://douchat.ai/agl --code c0de --transport http --app-name Douchat')
+  lifecycle.dispose()
+  const older = fakeAgl({ binary: '0.3.12', running: true, service: true })
+  lifecycle = new AglLifecycle(older.options())
+  await lifecycle.refresh()
+  await lifecycle.connectHub('https://douchat.ai/agl', 'c0de', { appName: 'Douchat' })
+  expect(older.commands).toContain('agl connect https://douchat.ai/agl --code c0de --transport http')
+})
+
+it('silently manages agl when the user never answered (enabled undefined), and never downgrades a newer agl', async () => {
+  const agl = fakeAgl({ binary: '0.3.15', bundled: '0.3.12', running: true, service: true })
+  const options = agl.options({ consented: () => aglEnabled({}) })
+  lifecycle = new AglLifecycle(options)
+  expect(lifecycle.view().state).toBe('starting')
+  expect(await lifecycle.refresh()).toMatchObject({ state: 'running', version: '0.3.15' })
+  expect(options.installBinary).not.toHaveBeenCalled()
+  expect(agl.commands.some(command => /uninstall|stop/.test(command))).toBe(false)
+  // Only an explicit "off" stops Douchat from managing it.
+  expect(aglEnabled({ enabled: false })).toBe(false)
+  expect(aglEnabled({ enabled: true })).toBe(true)
 })
 
 it('without consent only reads `--version` and `status --json`, and starts managing once the user agrees', async () => {

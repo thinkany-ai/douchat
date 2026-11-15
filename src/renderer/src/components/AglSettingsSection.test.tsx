@@ -83,39 +83,26 @@ it('describes applied updates', () => {
   expect(aglUpdateLine(status({ update: {} }))).toBe('agl checks for updates by itself every 12 hours.')
 })
 
-it('asks once before touching agl, and saves the answer', async () => {
-  api.getAglStatus.mockResolvedValue(status({ state: 'off', running: true, linked: false, hubStatus: undefined }))
+it('never asks: agl is on by default, and the master switch can still turn it off', async () => {
+  // Settings saved by no one yet: `enabled` is undefined, which means on.
   api.getAglSettings.mockResolvedValue({ autoLink: true, useForLocalAgents: false })
   api.saveAglSettings.mockImplementation(async (patch: object) => ({ autoLink: true, useForLocalAgents: false, ...patch }))
   await render()
   const text = container.textContent ?? ''
-  expect(text).toContain('Run coding agents with agl')
-  expect(text).toContain('install agl in /Users/me/.agl, which other apps that use agl share;')
-  expect(text).toContain('keep it running in the background (it starts when you log in) and update it automatically;')
-  expect(text).toContain('so the web app and your phone can use its agents')
-  // No switches, no update checks until the user answers.
-  expect(button('Enable agl')).toBeUndefined()
-  expect(button('Check for updates')).toBeUndefined()
-  expect(text).not.toContain('Up to date')
-  await act(async () => button('Not now')!.click())
-  expect(api.saveAglSettings).toHaveBeenCalledWith({ enabled: false })
-  expect(container.textContent).not.toContain('Run coding agents with agl')
-  // The master switch now says off; turning it on is the same consent.
+  expect(text).not.toContain('Run coding agents with agl')
+  expect(button('Not now')).toBeUndefined()
+  expect(button('Enable')).toBeUndefined()
+  expect(container.querySelector('.agl-consent')).toBeNull()
   const master = button('Enable agl')!
-  expect(master.getAttribute('aria-checked')).toBe('false')
-  expect(button('Show this computer in Devices')).toBeUndefined()
-  await act(async () => master.click())
-  expect(api.saveAglSettings).toHaveBeenLastCalledWith({ enabled: true })
+  expect(master.getAttribute('aria-checked')).toBe('true')
   expect(button('Show this computer in Devices')).toBeDefined()
-})
-
-it('enables from the card', async () => {
-  api.getAglStatus.mockResolvedValue(status({ state: 'off' }))
-  api.getAglSettings.mockResolvedValue({ autoLink: true, useForLocalAgents: false })
-  await render()
-  await act(async () => button('Enable')!.click())
-  expect(api.saveAglSettings).toHaveBeenCalledWith({ enabled: true })
-  expect(container.textContent).not.toContain('Run coding agents with agl')
+  expect(button('Check for updates')).toBeDefined()
+  await act(async () => master.click())
+  expect(api.saveAglSettings).toHaveBeenLastCalledWith({ enabled: false })
+  expect(button('Enable agl')!.getAttribute('aria-checked')).toBe('false')
+  expect(button('Show this computer in Devices')).toBeUndefined()
+  await act(async () => button('Enable agl')!.click())
+  expect(api.saveAglSettings).toHaveBeenLastCalledWith({ enabled: true })
 })
 
 it('offers Re-link when this computer is not linked or was removed', async () => {
