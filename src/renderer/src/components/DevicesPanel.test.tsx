@@ -173,18 +173,20 @@ it('does not take this computer for the device being added', async () => {
 
 const aglStatus = (extra: Record<string, unknown> = {}) => ({ state: 'running', home: '/Users/me/.agl', minimumVersion: '0.3.12', running: true, machineId: 'mine', linked: true, hubStatus: 'connected', update: {}, ...extra })
 
-it('asks once before Douchat touches agl', async () => {
+it('never shows a consent card: agl is on unless turned off', async () => {
   Object.assign(api, {
     platform: 'darwin',
-    getAglStatus: vi.fn(async () => aglStatus({ state: 'off' })),
+    getAglStatus: vi.fn(async () => aglStatus({ linked: false, hubStatus: undefined })),
     getAglSettings: vi.fn(async () => ({ autoLink: true, useForLocalAgents: false })),
-    saveAglSettings: vi.fn(async (patch: object) => ({ autoLink: true, useForLocalAgents: false, ...patch }))
+    relinkAgl: vi.fn(async () => aglStatus())
   })
+  api.listAglDevices.mockResolvedValue([device({ machineId: 'mac-2', name: 'Studio' })])
   await render()
-  expect(container.textContent).toContain('Run coding agents with agl')
-  await act(async () => button('Enable')!.click())
-  expect(api.saveAglSettings).toHaveBeenCalledWith({ enabled: true })
   expect(container.textContent).not.toContain('Run coding agents with agl')
+  expect(container.querySelector('.agl-consent')).toBeNull()
+  expect(button('Not now')).toBeUndefined()
+  // Undefined means on, so a missing link can be repaired.
+  expect(button('Re-link')).toBeTruthy()
 })
 
 it('offers to re-link this computer when its link is missing', async () => {

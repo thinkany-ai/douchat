@@ -44,7 +44,7 @@ export interface ThisComputerDependencies {
     view(): AglStatusView
     /** The link to the Douchat hub, from the last `agl status --json`. */
     douchatLink(): AglHubLink | undefined
-    connectHub(hubUrl: string, code: string): Promise<void>
+    connectHub(hubUrl: string, code: string, options?: { appName?: string }): Promise<void>
     disconnectHub(hubUrl: string): Promise<void>
     setLinkError(error: string | undefined): void
   }
@@ -58,11 +58,16 @@ export interface ThisComputerDependencies {
   rememberLinkedAccount: (account: string | undefined) => Promise<void>
   /** Whether the signed-in account lists this machine; undefined when that cannot be told now. */
   listedForAccount?: (machineId: string) => Promise<boolean | undefined>
+  /** Right before this computer's link is removed (account switch, Re-link): drop its agent bindings on the service. Never throws. */
+  beforeUnlink?: () => Promise<void>
   /** After a successful link (or unlink): refresh the device list. */
   linked?: () => void
   now?: () => number
   log?: (event: string, detail?: string) => void
 }
+
+/** The product name agl runs this computer's hub sessions under (`agl connect --app-name`). */
+export const DOUCHAT_APP_NAME = 'Douchat'
 
 /** After a failed attempt, wait this long before trying again for the same account. */
 export const LINK_RETRY_MS = 10 * 60_000
@@ -71,7 +76,7 @@ export const LINK_RETRY_MS = 10 * 60_000
  * Links this computer to the Douchat service through agl, the same link the
  * `curl … | sh` install command makes: a one-time pairing code minted with
  * the signed-in session, then `agl connect <hub> --code <code> --transport
- * http`. The machine then shows up in Devices, where it is "This computer".
+ * http --app-name Douchat`. The machine then shows up in Devices, where it is "This computer".
  *
  * One account per link: when another account signs in, the link made for the
  * previous one is removed (`agl disconnect <hub>`) and, with the setting on,
@@ -149,6 +154,7 @@ export class ThisComputerLinker {
 
   private async unlink(link: AglHubLink): Promise<void> {
     this.deps.log?.('agl.unlink', link.url)
+    await this.deps.beforeUnlink?.().catch(() => undefined)
     await this.deps.lifecycle.disconnectHub(link.url)
     await this.deps.rememberLinkedAccount(undefined).catch(() => undefined)
   }
@@ -160,7 +166,8 @@ export class ThisComputerLinker {
       const pairing = await this.deps.createPairing()
       if (!pairing?.code || !pairing.hubUrl) throw new Error('The Douchat service did not return a pairing code.')
       this.deps.log?.('agl.link', pairing.hubUrl)
-      await this.deps.lifecycle.connectHub(pairing.hubUrl, pairing.code)
+      // Agents the service starts on this computer run as Douchat (macOS privacy prompts name it).
+      await this.deps.lifecycle.connectHub(pairing.hubUrl, pairing.code, { appName: DOUCHAT_APP_NAME })
       this.failedAt.delete(account)
       await this.deps.rememberLinkedAccount(account).catch(() => undefined)
       this.deps.lifecycle.setLinkError(undefined)

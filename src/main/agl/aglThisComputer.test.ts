@@ -47,12 +47,13 @@ function setup(extra: { settings?: AglSettings; account?: string; view?: AglStat
   const linked = vi.fn()
   const listedForAccount = vi.fn(async () => extra.listed)
   const rememberLinkedAccount = vi.fn(async (value: string | undefined) => { recorded = value })
+  const beforeUnlink = vi.fn(async () => undefined)
   const linker = new ThisComputerLinker({
     lifecycle, createPairing, settings: () => extra.settings ?? DEFAULT_AGL_SETTINGS, account: () => account, linked, now: () => now,
-    linkedAccount: () => recorded, rememberLinkedAccount, listedForAccount
+    linkedAccount: () => recorded, rememberLinkedAccount, listedForAccount, beforeUnlink
   })
   return {
-    lifecycle, createPairing, linked, linker, listedForAccount, rememberLinkedAccount,
+    lifecycle, createPairing, linked, linker, beforeUnlink, listedForAccount, rememberLinkedAccount,
     recorded: () => recorded, signIn: (value: string | undefined) => { account = value }, advance: (ms: number) => { now += ms },
     setView: (next: Partial<AglStatusView>) => { current = { ...current, ...next } }
   }
@@ -62,7 +63,7 @@ it('mints a pairing code as the account, runs agl connect and records the accoun
   const { linker, lifecycle, createPairing, linked, recorded } = setup()
   expect(await linker.maybeLink()).toBe(true)
   expect(createPairing).toHaveBeenCalledTimes(1)
-  expect(lifecycle.connectHub).toHaveBeenCalledWith(HUB, 'c0de')
+  expect(lifecycle.connectHub).toHaveBeenCalledWith(HUB, 'c0de', { appName: 'Douchat' })
   expect(linked).toHaveBeenCalled()
   expect(recorded()).toBe('alice')
   // Linked now: nothing more to do.
@@ -104,8 +105,11 @@ it('moves the link to the account that signed in: disconnect the old one, link t
   machine.signIn('bob')
   expect(await machine.linker.maybeLink()).toBe(true)
   expect(machine.lifecycle.disconnectHub).toHaveBeenCalledWith(HUB)
-  expect(machine.lifecycle.connectHub).toHaveBeenCalledWith(HUB, 'c0de')
+  expect(machine.lifecycle.connectHub).toHaveBeenCalledWith(HUB, 'c0de', { appName: 'Douchat' })
   expect(machine.lifecycle.disconnectHub.mock.invocationCallOrder[0]).toBeLessThan(machine.lifecycle.connectHub.mock.invocationCallOrder[0])
+  // The previous account's agent bindings go before its link does.
+  expect(machine.beforeUnlink).toHaveBeenCalledTimes(1)
+  expect(machine.beforeUnlink.mock.invocationCallOrder[0]).toBeLessThan(machine.lifecycle.disconnectHub.mock.invocationCallOrder[0])
   expect(machine.recorded()).toBe('bob')
 })
 
@@ -149,7 +153,7 @@ it('re-links on request: drops a revoked link, clears the backoff, and reports f
   // …but "Re-link" does it.
   await machine.linker.relink()
   expect(machine.lifecycle.disconnectHub).toHaveBeenCalledWith(HUB)
-  expect(machine.lifecycle.connectHub).toHaveBeenCalledWith(HUB, 'c0de')
+  expect(machine.lifecycle.connectHub).toHaveBeenCalledWith(HUB, 'c0de', { appName: 'Douchat' })
 
   const failing = setup()
   failing.lifecycle.connectHub.mockRejectedValueOnce(new Error('agl connect failed: 500'))

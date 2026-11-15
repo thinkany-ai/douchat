@@ -21,9 +21,9 @@ export interface AglLifecycleOptions {
   /** False in a development run without an explicit agl home: nothing is touched. */
   enabled: boolean
   /**
-   * The user agreed to let Douchat manage agl (Settings → Agents → agl). While
-   * false, only `agl --version` and `agl status --json` run, to show the state.
-   * Default: agreed.
+   * Douchat may manage agl: on unless the user turned it off (Settings → Agents → agl).
+   * While false, only `agl --version` and `agl status --json` run, to show the state.
+   * Default: on.
    */
   consented?: () => boolean
   /** The agl home (AGL_HOME) to manage; ~/.agl unless overridden. */
@@ -83,6 +83,13 @@ export function planDaemon(status: AglStatusJson, binaryVersion: string | undefi
  * default one that would repoint the user's real service: check only.
  */
 export const canApplyUpdates = (defaultHome: boolean, status: Pick<AglStatusJson, 'service'> | undefined): boolean => defaultHome || !status?.service
+
+/** The first agl whose `agl connect` takes `--app-name`. */
+export const AGL_APP_NAME_VERSION = '0.3.13'
+export const supportsAppName = (version: string | undefined): boolean => {
+  if (!version) return false
+  try { return !isOlder(version, AGL_APP_NAME_VERSION) } catch { return false }
+}
 
 const HOUR = 3_600_000
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -207,7 +214,7 @@ export class AglLifecycle {
   }
 
   /**
-   * The user turned agl on or off (the consent card or the master switch).
+   * The user turned agl on or off (the master switch in Settings → Agents; on by default).
    * Off stops everything Douchat would do from now on: no update checks, no
    * restarts, no links, and the connection is closed. Nothing is uninstalled
    * or stopped: the shared daemon belongs to the user and other apps.
@@ -444,10 +451,16 @@ export class AglLifecycle {
     return this.updating
   }
 
-  /** `agl connect <hub> --code <code> --transport http`: links this machine to a hub. The code is never logged. */
-  async connectHub(hubUrl: string, code: string): Promise<void> {
+  /**
+   * `agl connect <hub> --code <code> --transport http`: links this machine to a hub. The code is never logged.
+   * With `appName`, also `--app-name <name>` (agl {@link AGL_APP_NAME_VERSION}+), so the agents this hub
+   * starts run under that product's name (macOS privacy prompts name it instead of agl); an older or
+   * unknown agl links without it.
+   */
+  async connectHub(hubUrl: string, code: string, options: { appName?: string } = {}): Promise<void> {
     if (!this.managing) throw new Error('agl is turned off in Settings → Agents.')
-    const result = await this.agl(['connect', hubUrl, '--code', code, '--transport', 'http'], 60_000)
+    const appName = options.appName && supportsAppName(this.binaryVersion) ? ['--app-name', options.appName] : []
+    const result = await this.agl(['connect', hubUrl, '--code', code, '--transport', 'http', ...appName], 60_000)
     if (result.code !== 0) throw new Error(`agl connect failed: ${output(result).replaceAll(code, '…')}`)
     await this.readStatus().catch(() => undefined)
     this.emit()

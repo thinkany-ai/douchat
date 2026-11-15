@@ -7,7 +7,7 @@ export const AGL_PROTOCOL = 1
  * Where the shared agl daemon on this computer stands:
  * - `unsupported`: Windows (agl has no Windows build); the desktop runtime is used.
  * - `disabled`: a development run without DOUCHAT_AGL_HOME (the shared ~/.agl is left alone).
- * - `off`: the user has not enabled agl yet, or turned it off. Douchat only reads
+ * - `off`: the user turned agl off in Settings → Agents. Douchat only reads
  *   `agl --version` and `agl status --json` to show where it stands; it installs,
  *   starts, updates and links nothing.
  * - `starting`: checking, installing or starting.
@@ -62,9 +62,10 @@ export interface AglStatusView {
 /** Machine-level settings for agl on this computer (not per account). */
 export interface AglSettings {
   /**
-   * The user agreed to let Douchat install agl in the shared ~/.agl, keep it
-   * running and up to date, and link this computer to the account. Undefined:
-   * not asked yet (the one-time card shows); false: "Not now" or turned off.
+   * Douchat installs agl in the shared ~/.agl, keeps it running and up to date,
+   * and links this computer to the account, silently. Undefined (never
+   * changed) means on; only an explicit false (the master switch in
+   * Settings → Agents) turns all of that off. See {@link aglEnabled}.
    */
   enabled?: boolean
   /** Link this computer to the signed-in Douchat account through agl, so it shows up in Devices. */
@@ -72,6 +73,9 @@ export interface AglSettings {
   /** Experimental: detect local agents and their models through agl instead of the desktop's own probes, and run Codex through agl. */
   useForLocalAgents: boolean
 }
+
+/** agl is on unless the user turned it off explicitly. */
+export const aglEnabled = (settings: Pick<AglSettings, 'enabled'>): boolean => settings.enabled !== false
 
 export const DEFAULT_AGL_SETTINGS: AglSettings = { autoLink: true, useForLocalAgents: false }
 
