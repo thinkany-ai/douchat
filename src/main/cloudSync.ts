@@ -52,6 +52,8 @@ export class CloudSyncClient {
   private latestRoomReads: RoomReadMark[] = []
   /** Another client read a shared room further than this desktop has. */
   onRoomRead?: (mark: RoomReadMark) => boolean
+  /** A request the service runs itself (an agent bound to agl on this computer): never claimed here. */
+  skipRequest?: (request: WebSendRequest) => boolean
   private activityTimer?: ReturnType<typeof setTimeout>
   private publishing = false
 
@@ -311,6 +313,7 @@ export class CloudSyncClient {
     const request = change.data as unknown as WebSendRequest | null
     if (!this.runRequest || change.deleted || !request || request.state !== 'pending' || this.handling.has(change.id)) return
     if (!this.store.hasConversation(running.ownerId, request.conversationId)) return
+    if (this.skipRequest?.(request)) return
     const write = async (baseRevision: number, data?: WebSendRequest) => (await this.call<{ results: SyncPushResult[] }>(running, {
       action: 'push',
       ops: [{ opId: randomUUID(), kind: 'request', id: change.id, baseRevision, ...(data ? { data: data as unknown as SyncRecord } : { deleted: true }) } satisfies SyncOp]

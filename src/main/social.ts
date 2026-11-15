@@ -50,6 +50,9 @@ export class SocialClient {
   constructor(private url: string, private auth: DesktopAuth, private store: DouchatStore, private runtime: DouchatRuntime, private onInboxChanged: () => void = () => {}) {}
   /** Agents a douchat-host claims tasks for: this computer never advertises or claims them. */
   setDaemonAgents(daemonAgents: () => Set<string>): void { this.daemonAgents = daemonAgents }
+  private aglAgents: () => Set<string> = () => new Set()
+  /** Agents the service runs through agl on this computer: still online here, but their tasks are never claimed here. */
+  setAglAgents(aglAgents: () => Set<string>): void { this.aglAgents = aglAgents }
   private runnableLocalIds(ownerId: string): string[] {
     const daemon = this.daemonAgents()
     return this.store.agents.filter((agent) => agent.ownerId === ownerId && !daemon.has(agent.id)).map((agent) => agent.id)
@@ -486,6 +489,8 @@ export class SocialClient {
           if (pending.localId && this.store.agent(pending.localId)?.ownerId !== identity.id) continue
           // A douchat-host claims these; never run them here, even as a fallback.
           if (pending.localId && this.daemonAgents().has(pending.localId)) continue
+          // The service's agl executor runs these on this computer; claiming them here would run them twice.
+          if (pending.localId && this.aglAgents().has(pending.localId)) continue
           const { task } = await this.request<{ task: SocialTask | null }>({ action: 'claim', id: pending.id }, identity)
           if (!task) continue
           this.store.saveSocialTaskResult({ id: task.id, ownerId: identity.id, claim: task.claim, failed: true, reply: '设备在执行期间中断，任务未自动重试。请确认执行结果后再派发新任务。' })
