@@ -41,3 +41,23 @@ it('never claims room tasks of agents the service runs through agl here, but kee
   await vi.waitFor(() => expect(bodies.filter(body => body.action === 'claim').map(body => body.id)).toEqual(['agl-task', 'own-task']))
   client.stop()
 })
+
+it('claims an agl-run task here once it waited out the grace window (by createdAt) and the service has not taken it', async () => {
+  const { client, runtime } = setup()
+  client.setAglAgents(() => new Set(['codex-agent']))
+  const claims: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+    if (!options?.body) return new Response(JSON.stringify({ data: { userId: 'alice', rooms: [], friendships: [] } }))
+    const body = JSON.parse(options.body)
+    if (body.action === 'claim') claims.push(body.id)
+    const data = body.action === 'tasks' ? { tasks: [
+      { id: 'stale', localId: 'codex-agent', createdAt: new Date(Date.now() - 31_000).toISOString() },
+      { id: 'fresh', localId: 'codex-agent', createdAt: new Date(Date.now() - 1_000).toISOString() }
+    ] } : body.action === 'claim' ? { task: { id: body.id, claim: 'c', ownerId: 'alice', authorId: 'bob', agent: { localId: 'codex-agent', ownerId: 'alice' }, content: 'run' } } : {}
+    return new Response(JSON.stringify({ data }))
+  }))
+  client.start()
+  await vi.waitFor(() => expect(runtime.executeSocialTask).toHaveBeenCalledTimes(1))
+  client.stop()
+  expect(claims).toEqual(['stale'])
+})
