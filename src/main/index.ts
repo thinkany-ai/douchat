@@ -125,7 +125,7 @@ const webAppUrl = normalizeWebAppUrl(
  * local development so test logins, screenshots and database resets cannot
  * overwrite a user's installed Douchat data.
  */
-app.setPath('userData', join(app.getPath('appData'), userDataDirectoryName(development)))
+app.setPath('userData', join(app.getPath('appData'), userDataDirectoryName(development, process.env.DOUCHAT_PROFILE)))
 configureLocalAgentRegistry(app.getPath('userData'))
 const connections = new ConnectionManager(connectionRegistry(), agentsOnConnection)
 configureRemoteTransport(app.getPath('userData'))

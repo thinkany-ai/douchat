@@ -30,6 +30,18 @@ describe('shared group follow-up routing', () => {
   it.each(['@Bob 好的', '@all 都看看', '@Grok 帮忙', '@Unknown 你好', '👍 @Bob 好的', '＠Bob 好的'])(
     'does not inherit a target for an explicit address: %s', content => expect(target(history, content)).toBeUndefined()
   )
+  it('lets the service route a message that names another agent without @', () => {
+    for (const content of ['is Grok here?', 'grok, can I talk with you', '叫 Grok 来']) expect(target(history, content)).toBeUndefined()
+    expect(target(history, 'Dr. Dou 你再想想')).toBe('dr')
+    const named = { ...conversation, socialRoom: { ...conversation.socialRoom!, agents: [...conversation.socialRoom!.agents, { id: 'dou', name: 'Dou', ownerId: 'alice', localId: 'dou' }] } }
+    expect(target(history, 'Dr. Dou 继续', named)).toBe('dr')
+  })
+  it('lets the service pick someone else when the message asks for another responder', () => {
+    for (const content of ['any one else?', 'can another agent answer me', 'anyone?', '换个人回答', '还有谁在', '其他 agent 呢'])
+      expect(target(history, content)).toBeUndefined()
+    for (const content of ['要啊，继续', '换个话题聊聊', 'lets talk another topic', 'what else can you do'])
+      expect(target(history, content)).toBe('dr')
+  })
   it('does not interpret quoted mentions, code or email as a new address', () => {
     expect(target(history, '> @Bob 的建议\n帮我解释一下')).toBe('dr')
     expect(target(history, '解释 `@Bob`，发到 hello@example.com')).toBe('dr')

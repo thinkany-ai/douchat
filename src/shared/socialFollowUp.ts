@@ -32,5 +32,22 @@ export function socialFollowUpTarget(
   if (now < lastActivity || now - lastActivity > SOCIAL_FOLLOW_UP_WINDOW_MS) return undefined
   const target = room.agents.find(agent => agent.id === task.agentId)
   if (!target || (target.ownerId !== conversation.ownerId && (!target.interactionHumans || target.interactionHumans === 'deny'))) return undefined
+  // Naming another agent without @ ("is Dobi here?") turns to it; the service
+  // routes that message instead of pinning it to the previous responder.
+  if (namesOtherAgent(content, room.agents, target.id) || ASKS_FOR_SOMEONE_ELSE.test(content)) return undefined
   return target
+}
+
+/** "anyone else?", "can another agent answer", "换个人" ask the service to pick a different responder. */
+const ASKS_FOR_SOMEONE_ELSE = /\b(any|some|no) ?(one|body) else\b|^\s*any ?(one|body)\s*[?？]*\s*$|\bwho else\b|\banother (agent|one|person|bot|member|assistant)\b|\bother (agents?|ones?|members?|bots?|assistants?|people)\b|别人|其他人|其它人|其他的?\s*(agent|助手|成员)|另(一|外一)个\s*(人|agent|助手)|换(个|一个)\s*(人|agent|助手)|还有谁|谁还/i
+
+
+function namesOtherAgent(content: string, agents: SocialAgent[], targetId: string): boolean {
+  const text = content.toLocaleLowerCase()
+  const targetName = agents.find(agent => agent.id === targetId)?.name.toLocaleLowerCase() ?? ''
+  return agents.some(agent => {
+    const name = agent.name.trim().toLocaleLowerCase()
+    // A name inside the target's own name ("Dou" in "Dr. Dou") does not count.
+    return agent.id !== targetId && !!name && !targetName.includes(name) && text.includes(name)
+  })
 }

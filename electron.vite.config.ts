@@ -25,8 +25,9 @@ export default defineConfig({
       include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'fflate', 'streamdown', 'highlight.js/lib/common']
     },
     // Keep clear of Termany's release PTY port (5174) and Vite's 5173 fallback chain.
+    // A second dev profile (DOUCHAT_PROFILE) runs beside the default one on its own port.
     server: {
-      port: 5275,
+      port: Number(process.env.DOUCHAT_RENDERER_PORT) || 5275,
       strictPort: true
     },
     preview: {
