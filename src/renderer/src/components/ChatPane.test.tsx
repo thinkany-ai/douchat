@@ -166,17 +166,21 @@ describe('private delivery disclosure', () => {
 
   it('shows a pending social reply as the agent avatar with a loading bubble, not text in the bubble', async () => {
     const task = { id: 'task', agentId: 'peer', agentName: 'Peer', status: 'pending' }
-    const peer = { id: 'peer', localId: 'local', ownerId: 'bob', name: 'Peer', avatarEmoji: '🦊', onlineUntil: 0, approvalTaskId: 'task' }
+    const peer = { id: 'peer', localId: 'local', ownerId: 'bob', name: 'Peer nickname', avatarEmoji: '🦊', onlineUntil: 0, approvalTaskId: 'task' }
     const render = async () => act(async () => root.render(<MessageRow messages={[{ ...incomingReply, authorId: 'user', socialTasks: [task] }]} socialAgents={[peer]} agents={[]} relatedMessages={[]} userName="You" userAvatar="" showAuthor={false} />))
     await render()
     expect(container.querySelector('.user-bubble')?.textContent).not.toContain('Peer')
     const row = container.querySelector('.social-task-typing')
-    expect(row?.querySelector('[data-testid="agent-avatar"]')?.getAttribute('data-agent-name')).toBe('Peer')
+    expect(row?.querySelector('[data-testid="agent-avatar"]')?.getAttribute('data-agent-name')).toBe('Peer nickname')
+    expect(row?.querySelector('.typing-label')?.textContent).toBe('Peer nickname')
+    expect(row?.querySelector('.typing-bubble')?.getAttribute('aria-label')).toContain('Peer nickname')
     expect(row?.querySelectorAll('.typing-bubble i')).toHaveLength(3)
     expect(row?.querySelector('.typing-bubble')?.getAttribute('aria-label')).toContain('等待主人设备上线')
     peer.onlineUntil = Date.now() + 45000
+    peer.name = 'Renamed peer'
     task.status = 'running'
     await render()
+    expect(container.querySelector('.social-task-typing .typing-label')?.textContent).toBe('Renamed peer')
     expect(container.querySelector('.social-task-typing .typing-bubble')?.getAttribute('aria-label')).toContain('等待主人确认')
     task.status = 'succeeded'
     await render()

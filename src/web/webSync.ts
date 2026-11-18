@@ -13,6 +13,8 @@ export class UnauthorizedError extends Error {}
 export interface Mutation {
   kind: SyncWireKind
   id: string
+  /** Remove an unconfirmed new record if the write fails. */
+  rollbackOnFailure?: boolean
   /** Returns the new record, or null to delete it. Re-run on the latest copy after a conflict. */
   apply: (current: SyncRecord | undefined) => SyncRecord | null
 }
@@ -46,6 +48,10 @@ export class WebSync {
     return this.records.get(kind)?.get(id)?.data as T | undefined
   }
 
+  isConfirmed(kind: SyncWireKind, id: string): boolean {
+    return (this.records.get(kind)?.get(id)?.revision ?? 0) > 0
+  }
+
   /**
    * Change records. Each write is based on the revision this page last saw;
    * when another device got there first, the change is re-applied to the
@@ -67,15 +73,24 @@ export class WebSync {
     }
     if (!ops.length) return
     // Show the change right away; the cloud's answer settles it.
+    const rollback = (index: number) => {
+      const { kind, id, data, baseRevision } = ops[index]
+      const entry = this.records.get(kind)?.get(id)
+      if (sent[index].rollbackOnFailure && !baseRevision && entry?.revision === 0 && entry.data === data) this.records.get(kind)?.delete(id)
+    }
     for (const op of ops) this.setLocal(op.kind, op.id, op.data, undefined)
     this.emit()
-    const { results } = await this.call<{ results: SyncPushResult[] }>({ action: 'push', accepts: SYNC_PUSH_ACCEPTS, ops })
+    const { results } = await this.call<{ results: SyncPushResult[] }>({ action: 'push', accepts: SYNC_PUSH_ACCEPTS, ops }).catch((error: unknown) => {
+      ops.forEach((_, index) => rollback(index))
+      this.emit()
+      throw error
+    })
     const retry: Mutation[] = []
     let failure: Error | undefined
     for (const [index, result] of results.entries()) {
       const op = ops[index]
       if (result.status === 'applied') { this.setLocal(op.kind, op.id, op.data, result.revision); continue }
-      if (result.status === 'rejected') { failure ??= new Error(result.error); continue }
+      if (result.status === 'rejected') { rollback(index); failure ??= new Error(result.error); continue }
       const current = result.current
       this.setLocal(op.kind, op.id, current.deleted ? undefined : current.data ?? undefined, current.revision)
       if (!current.deleted) retry.push(sent[index])

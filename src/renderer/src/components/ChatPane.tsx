@@ -934,10 +934,14 @@ function SocialTaskTyping({ tasks, socialAgents, agents }: { tasks: NonNullable<
     const offline = social?.onlineUntil !== undefined && social.onlineUntil <= time
     const status = task.status === 'pending' ? offline ? '等待主人设备上线，上线后处理' : '等待接单' : offline ? '设备连接已中断，等待恢复' : social?.approvalTaskId === task.id ? '等待主人确认' : '处理中'
     const avatar = agents.find((entry) => entry.id === task.agentId) ?? ({ ...social, id: task.agentId, name: social?.name ?? task.agentName } as unknown as AgentConfig)
-    const label = `${task.agentName} · ${status}`
+    const name = agentDisplayName(avatar)
+    const label = `${name} · ${status}`
     return <div className="typing-row social-task-typing" key={task.id} data-status={task.status}>
       <AgentAvatar agent={avatar} size={36} />
-      <span className="typing-bubble" role="status" aria-label={label} title={label}><i /><i /><i /></span>
+      <div className="typing-content">
+        <span className="typing-label">{name}</span>
+        <span className="typing-bubble" role="status" aria-label={label} title={label}><i /><i /><i /></span>
+      </div>
     </div>
   })}</>
 }

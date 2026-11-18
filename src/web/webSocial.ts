@@ -29,6 +29,7 @@ interface RoomState { revision?: string; messages: Map<string, SocialMessage>; l
 export class WebSocial {
   private snapshot?: SocialSnapshot
   private readonly rooms = new Map<string, RoomState>()
+  private readonly roomSyncs = new Map<string, Promise<boolean>>()
   /** Messages sent here, shown until the service confirms them. */
   private readonly sending = new Map<string, ChatMessage>()
   private readonly attachments = new Map<string, string>()
@@ -98,8 +99,10 @@ export class WebSocial {
     const snapshot = rendererSocialSnapshot(privacySafeSocialSnapshot(await this.service<SocialSnapshot>('/api/desktop-auth/social')))
     if (snapshot.userId !== this.ownerId()) return
     this.snapshot = snapshot
-    await Promise.all(snapshot.rooms.map((room) => this.syncRoom(room).catch(() => undefined)))
     this.onChange()
+    await Promise.all(snapshot.rooms.map(async (room) => {
+      if (await this.syncRoom(room).catch(() => false)) this.onChange()
+    }))
   }
 
   /**
@@ -107,10 +110,19 @@ export class WebSocial {
    * than the last one seen plus replies still in progress, never whole pages
    * again. Images come as refs and are fetched once, when shown.
    */
-  private async syncRoom(room: SocialRoom): Promise<void> {
+  private syncRoom(room: SocialRoom, force = false): Promise<boolean> {
+    const previous = this.roomSyncs.get(room.id) ?? Promise.resolve(false)
+    const current = previous.catch(() => false).then(() => this.fetchRoom(room, force)).finally(() => {
+      if (this.roomSyncs.get(room.id) === current) this.roomSyncs.delete(room.id)
+    })
+    this.roomSyncs.set(room.id, current)
+    return current
+  }
+
+  private async fetchRoom(room: SocialRoom, force: boolean): Promise<boolean> {
     const state: RoomState = this.rooms.get(room.id) ?? { messages: new Map(), loaded: false, cursor: { time: '1970-01-01T00:00:00.000Z', id: '' } }
     this.rooms.set(room.id, state)
-    if (state.loaded && room.revision && state.revision === room.revision) return
+    if (!force && state.loaded && room.revision && state.revision === room.revision) return false
     const revision = room.revision
     if (!state.loaded) {
       let before: string | undefined
@@ -135,7 +147,8 @@ export class WebSocial {
       }
     }
     state.loaded = true
-    state.revision = revision
+    if (!force) state.revision = revision
+    return true
   }
 
   private take(room: SocialRoom, state: RoomState, messages: SocialMessage[]): void {
@@ -264,18 +277,32 @@ export class WebSocial {
     const agentIds = explicit.length ? explicit : followUp ? [followUp.id] : []
     checkHumanAgentTargets(agentIds, room.agents, ownerId)
     const id = crypto.randomUUID()
-    const local: ChatMessage = { id: `${conversationId}:${id}`, conversationId, topicId: TOPIC_ID, authorId: 'user', authorName: 'You', text: content, kind: 'message', createdAt: Date.now(), deliveryState: 'sending' }
+    const socialTasks = agentIds.map((agentId) => ({
+      id: `${id}:local:${agentId}`, agentId, agentName: room.agents.find((agent) => agent.id === agentId)?.name ?? '', status: 'pending' as const
+    }))
+    const local: ChatMessage = {
+      id: `${conversationId}:${id}`, conversationId, topicId: TOPIC_ID, authorId: 'user', authorName: 'You',
+      text: content, kind: 'message', createdAt: Date.now(), deliveryState: 'sending',
+      ...(socialTasks.length ? { socialTasks } : {})
+    }
     this.sending.set(local.id, local)
     this.onChange()
     try {
       await this.action({ action: 'send', roomId: room.id, id, content, agentId: agentIds[0], agentIds } as Record<string, unknown>)
-      this.sending.set(local.id, { ...local, deliveryState: agentIds.length ? 'confirming' : undefined })
+      if (this.sending.has(local.id)) {
+        this.sending.set(local.id, { ...local, deliveryState: agentIds.length ? 'confirming' : undefined })
+        this.onChange()
+      }
     } catch (error) {
-      this.sending.set(local.id, { ...local, deliveryState: 'failed' })
-      this.onChange()
+      if (this.sending.has(local.id)) {
+        this.sending.set(local.id, { ...local, deliveryState: 'failed', socialTasks: undefined })
+        this.onChange()
+      }
       throw error
     }
-    await this.refresh().catch(() => undefined)
+    // Fetch this chat immediately. An unrelated room's history must not delay
+    // the handoff from the local bubble to the server's task state.
+    void this.syncRoom(room, true).then(() => this.onChange()).catch(() => undefined)
   }
 }
 

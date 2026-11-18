@@ -1,5 +1,5 @@
 import { DEFAULT_DECISION_SETTINGS } from '../shared/groupDecision'
-import { ACTIVITY_STALE_MS, type SupportShare, type RoomReadMark, type SyncedActivity, type SyncRecord, type WebSendRequest } from '../shared/cloudSync'
+import { ACTIVITY_STALE_MS, WEB_REQUEST_TTL_MS, type SupportShare, type RoomReadMark, type SyncedActivity, type SyncRecord, type WebSendRequest } from '../shared/cloudSync'
 import type { SocialAction, SocialResult } from '../shared/social'
 import type {
   AgentConfig,
@@ -95,6 +95,7 @@ export function createWebApi(): DouchatApi {
   const signOutLocally = () => {
     sync?.stop(); sync = undefined; snapshot = undefined
     social?.stop(); social = undefined
+    replying.clear()
     token = undefined; user = undefined
     write(TOKEN_KEY); write(USER_KEY)
     setAuth({ status: 'signed-out' })
@@ -223,13 +224,14 @@ export function createWebApi(): DouchatApi {
     const rooms = social?.view() ?? { conversations: [], messages: [] }
     const conversations = [...(sync?.all<Conversation>('conversation') ?? []), ...rooms.conversations].filter((conversation) => !conversation.hidden || conversation.savedToContacts)
     const ids = new Set(conversations.map((conversation) => conversation.id))
+    const syncedMessages = sync?.all<ChatMessage>('message') ?? []
     // A desktop sends the request as a message with the same id; until that arrives, show the request.
-    const sent = new Set((sync?.all<ChatMessage>('message') ?? []).map((message) => message.id))
-    const requests = (sync?.all<WebSendRequest>('request') ?? []).filter((request) => !sent.has(request.id) && ids.has(request.conversationId))
-    const pending: ChatMessage[] = requests.map((request) => ({
+    const sent = new Map(syncedMessages.map((message) => [message.id, message]))
+    const requests = (sync?.all<WebSendRequest>('request') ?? []).filter((request) => ids.has(request.conversationId))
+    const pending: ChatMessage[] = requests.filter((request) => !sent.has(request.id)).map((request) => ({
       id: request.id,
       conversationId: request.conversationId,
-      topicId: conversations.find((conversation) => conversation.id === request.conversationId)?.activeTopicId ?? '',
+      topicId: conversation(request.conversationId)?.activeTopicId ?? '',
       authorId: 'user',
       authorName: user?.name ?? 'You',
       text: request.text,
@@ -238,9 +240,31 @@ export function createWebApi(): DouchatApi {
       deliveryState: request.state === 'failed' ? 'failed' : 'sending',
       ...(request.error ? { error: request.error } : {})
     }))
-    const drafts = [...replying.values()].flatMap((reply) => reply.draft ? [reply.draft] : [])
-    const messages = [...(sync?.all<ChatMessage>('message') ?? []).filter((message) => ids.has(message.conversationId)), ...rooms.messages, ...pending, ...drafts]
+    const localReplies = [...replying.values()]
+    const drafts = localReplies.flatMap((reply) => reply.draft && !sent.has(reply.draft.id) ? [reply.draft] : [])
+    const messages = [...syncedMessages.filter((message) => ids.has(message.conversationId)), ...rooms.messages, ...pending, ...drafts]
       .sort((a, b) => a.createdAt - b.createdAt)
+    const activity = localReplies.filter((reply) => !reply.draft && ids.has(reply.activity.conversationId)).map((reply) => reply.activity)
+    // A desktop or remote executor replaces this placeholder as soon as its activity arrives.
+    const now = Date.now()
+    const activeIds = new Set(replying.keys())
+    for (const item of sync?.all<SyncedActivity>('activity') ?? []) {
+      if (!ids.has(item.conversationId) || activeIds.has(item.conversationId) || now - item.updatedAt >= ACTIVITY_STALE_MS) continue
+      activity.push(item.activity)
+      activeIds.add(item.conversationId)
+    }
+    for (const request of requests) {
+      if (activeIds.has(request.conversationId) || request.state === 'failed' || now - request.createdAt >= WEB_REQUEST_TTL_MS) continue
+      const target = conversation(request.conversationId)
+      if (!target?.agentIds.length) continue
+      const agent = target.type === 'direct' ? sync?.get<AgentConfig>('agent', target.agentIds[0]) : undefined
+      activity.push({
+        conversationId: target.id, topicId: sent.get(request.id)?.topicId ?? target.activeTopicId,
+        phase: agent ? 'replying' : 'planning', agentIds: agent ? [agent.id] : [],
+        label: agent?.name ?? '', startedAt: request.createdAt
+      })
+      activeIds.add(target.id)
+    }
     const admin = agents.find((agent) => agent.systemRole === 'admin')
     snapshot = {
       agents,
@@ -248,11 +272,7 @@ export function createWebApi(): DouchatApi {
       conversations,
       messages,
       privateMessages: (sync?.all<PrivateMessage>('privateMessage') ?? []).filter((message) => ids.has(message.conversationId)),
-      activity: [
-        ...replying.values().filter((reply) => !reply.draft && ids.has(reply.activity.conversationId)).map((reply) => reply.activity),
-        // A desktop's replies in progress; a copy it stopped refreshing is from a desktop that went away.
-        ...(sync?.all<SyncedActivity>('activity') ?? []).filter((item) => ids.has(item.conversationId) && !replying.has(item.conversationId) && Date.now() - item.updatedAt < ACTIVITY_STALE_MS).map((item) => item.activity)
-      ],
+      activity,
       computers: [],
       routines: (sync?.all<Routine>('routine') ?? []).sort((a, b) => a.nextRunAt - b.nextRunAt),
       runs: [],
@@ -380,7 +400,7 @@ export function createWebApi(): DouchatApi {
   function adoptStrandedRequests(): void {
     if (!sync || desktopOnline()) return
     for (const request of sync.all<WebSendRequest>('request')) {
-      if (!adoptable(request) || adopting.has(request.id) || replying.has(request.conversationId)) continue
+      if (!adoptable(request) || !sync.isConfirmed('request', request.id) || adopting.has(request.id) || replying.has(request.conversationId)) continue
       const target = conversation(request.conversationId)
       if (!target || target.type === 'direct' && !isCloudAgent(sync.get<AgentConfig>('agent', target.agentIds[0])) || target.type === 'group' && !canRunCloudGroup(sync, target)) continue
       adopting.add(request.id)
@@ -570,7 +590,7 @@ export function createWebApi(): DouchatApi {
       }
       if (await answerHere(conversationId, text.trim())) return
       const request: WebSendRequest = { id: crypto.randomUUID(), conversationId, text: text.trim(), createdAt: Date.now(), state: 'pending' }
-      await mutate([{ kind: 'request', id: request.id, apply: () => request as unknown as SyncRecord }])
+      await mutate([{ kind: 'request', id: request.id, apply: () => request as unknown as SyncRecord, rollbackOnFailure: true }])
     },
     updateConversation: async (id, input: UpdateConversationInput) => {
       if (social?.roomOf(id)) {
